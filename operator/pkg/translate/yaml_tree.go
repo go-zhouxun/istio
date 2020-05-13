@@ -17,15 +17,14 @@ package translate
 import (
 	"gopkg.in/yaml.v2"
 
-	"istio.io/istio/operator/pkg/util"
-
 	"istio.io/istio/operator/pkg/tpath"
+	"istio.io/istio/operator/pkg/util"
 )
 
-// OverlayYAMLTree takes an input tree inTreeStr, a partially constructed output tree outTreeStr, and a map of
+// YAMLTree takes an input tree inTreeStr, a partially constructed output tree outTreeStr, and a map of
 // translations of source-path:dest-path in pkg/tpath format. It returns an output tree with paths from the input
 // tree, translated and overlaid on the output tree.
-func OverlayYAMLTree(inTreeStr, outTreeStr string, translations map[string]string) (string, error) {
+func YAMLTree(inTreeStr, outTreeStr string, translations map[string]string) (string, error) {
 	inTree := make(map[string]interface{})
 	if err := yaml.Unmarshal([]byte(inTreeStr), &inTree); err != nil {
 		return "", err
@@ -37,7 +36,7 @@ func OverlayYAMLTree(inTreeStr, outTreeStr string, translations map[string]strin
 
 	for inPath, translation := range translations {
 		path := util.PathFromString(inPath)
-		node, found, err := tpath.GetFromTreePath(inTree, path)
+		node, found, err := tpath.Find(inTree, path)
 		if err != nil {
 			return "", err
 		}

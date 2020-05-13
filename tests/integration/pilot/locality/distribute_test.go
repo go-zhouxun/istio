@@ -19,14 +19,15 @@ import (
 	"testing"
 	"time"
 
+	"istio.io/pkg/log"
+
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/echo"
 	"istio.io/istio/pkg/test/framework/components/echo/echoboot"
-	"istio.io/istio/pkg/test/framework/components/environment"
 	"istio.io/istio/pkg/test/framework/components/namespace"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/pkg/test/scopes"
 	"istio.io/istio/pkg/test/util/retry"
-	"istio.io/pkg/log"
 )
 
 // This test allows for Locality Distribution Load Balancing testing without needing Kube nodes in multiple regions.
@@ -67,7 +68,7 @@ func TestDistribute(t *testing.T) {
 			fakeHostname := fmt.Sprintf("fake-eds-external-service-%v.com", r.Int())
 
 			// First, deploy across multiple zones
-			deploy(ctx, ns, serviceConfig{
+			deploy(ctx, ctx, ns, serviceConfig{
 				Name:       "distribute-eds",
 				Host:       fakeHostname,
 				Namespace:  ns.Name(),
@@ -96,7 +97,7 @@ func TestDistribute(t *testing.T) {
 
 			// Set a to no locality, b to matching locality, and c to non-matching.
 			// Expect all to get even traffic after disabling locality lb.
-			deploy(ctx, ns, serviceConfig{
+			deploy(ctx, ctx, ns, serviceConfig{
 				Name:                       "distribute-eds",
 				Host:                       fakeHostname,
 				Namespace:                  ns.Name(),

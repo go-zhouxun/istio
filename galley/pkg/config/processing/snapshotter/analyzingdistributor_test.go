@@ -37,6 +37,9 @@ import (
 type updaterMock struct {
 	m        sync.RWMutex
 	messages diag.Messages
+
+	waitCh      chan struct{}
+	waitTimeout time.Duration
 }
 
 // Update implements StatusUpdater
@@ -44,13 +47,36 @@ func (u *updaterMock) Update(messages diag.Messages) {
 	u.m.Lock()
 	defer u.m.Unlock()
 	u.messages = messages
+
+	if u.waitCh != nil {
+		close(u.waitCh)
+		u.waitCh = nil
+	}
 }
 
 func (u *updaterMock) getMessages() diag.Messages {
-	u.m.RLock()
-	messages := u.messages
-	u.m.RUnlock()
-	return messages
+	u.m.Lock()
+	ms := u.messages
+	if ms != nil {
+		u.m.Unlock()
+		return ms
+	}
+
+	if u.waitCh == nil {
+		u.waitCh = make(chan struct{})
+	}
+	ch := u.waitCh
+	u.m.Unlock()
+
+	select {
+	case <-time.After(u.waitTimeout):
+		return nil
+	case <-ch:
+		u.m.RLock()
+		m := u.messages
+		u.m.RUnlock()
+		return m
+	}
 }
 
 type analyzerMock struct {
@@ -125,7 +151,7 @@ func TestAnalyzeAndDistributeSnapshots(t *testing.T) {
 		StatusUpdater:      u,
 		Analyzer:           analysis.Combine("testCombined", a),
 		Distributor:        d,
-		AnalysisSnapshots:  []string{snapshots.Default, snapshots.SyntheticServiceEntry},
+		AnalysisSnapshots:  []string{snapshots.Default},
 		TriggerSnapshot:    snapshots.Default,
 		CollectionReporter: cr,
 		AnalysisNamespaces: []resource.Namespace{"includedNamespace"},
@@ -134,33 +160,28 @@ func TestAnalyzeAndDistributeSnapshots(t *testing.T) {
 
 	schemaA := newSchema("a")
 	schemaB := newSchema("b")
-	schemaC := newSchema("c")
 	schemaD := newSchema("d")
 
 	sDefault := getTestSnapshot(schemaA, schemaB)
-	sSynthetic := getTestSnapshot(schemaC)
 	sOther := getTestSnapshot(schemaA, schemaD)
 
-	ad.Distribute(snapshots.SyntheticServiceEntry, sSynthetic)
 	ad.Distribute(snapshots.Default, sDefault)
 	ad.Distribute("other", sOther)
 
 	// Assert we sent every received snapshot to the distributor
-	g.Eventually(func() snapshot.Snapshot { return d.GetSnapshot(snapshots.SyntheticServiceEntry) }).Should(Equal(sSynthetic))
 	g.Eventually(func() snapshot.Snapshot { return d.GetSnapshot(snapshots.Default) }).Should(Equal(sDefault))
 	g.Eventually(func() snapshot.Snapshot { return d.GetSnapshot("other") }).Should(Equal(sOther))
 
 	// Assert we triggered analysis only once, with the expected combination of snapshots
-	sCombined := getTestSnapshot(schemaA, schemaB, schemaC)
+	sCombined := getTestSnapshot(schemaA, schemaB)
 	g.Eventually(a.getAnalyzeCalls).Should(ConsistOf(sCombined))
 
 	// Verify the collection reporter hook was called
 	g.Expect(collectionAccessed).To(Equal(a.collectionToAccess))
 
 	// Verify we only reported messages in the AnalysisNamespaces
-	updaterMessages := u.getMessages()
-	g.Expect(updaterMessages).To(HaveLen(1))
-	for _, m := range updaterMessages {
+	g.Eventually(u.getMessages()).Should(HaveLen(1))
+	for _, m := range u.getMessages() {
 		g.Expect(m.Resource.Origin.Namespace()).To(Equal(resource.Namespace("includedNamespace")))
 	}
 }
@@ -168,7 +189,7 @@ func TestAnalyzeAndDistributeSnapshots(t *testing.T) {
 func TestAnalyzeNamespaceMessageHasNoResource(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	u := &updaterMock{}
+	u := &updaterMock{waitTimeout: 1 * time.Second}
 	a := &analyzerMock{
 		collectionToAccess: basicmeta.K8SCollection1.Name(),
 		resourcesToReport: []*resource.Instance{
@@ -192,13 +213,13 @@ func TestAnalyzeNamespaceMessageHasNoResource(t *testing.T) {
 
 	ad.Distribute(snapshots.Default, sDefault)
 	g.Eventually(a.getAnalyzeCalls).Should(Not(BeEmpty()))
-	g.Expect(u.getMessages()).To(HaveLen(1))
+	g.Eventually(u.getMessages()).Should(HaveLen(1))
 }
 
 func TestAnalyzeNamespaceMessageHasOriginWithNoNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	u := &updaterMock{}
+	u := &updaterMock{waitTimeout: 1 * time.Second}
 	a := &analyzerMock{
 		collectionToAccess: basicmeta.K8SCollection1.Name(),
 		resourcesToReport: []*resource.Instance{
@@ -228,13 +249,13 @@ func TestAnalyzeNamespaceMessageHasOriginWithNoNamespace(t *testing.T) {
 
 	ad.Distribute(snapshots.Default, sDefault)
 	g.Eventually(a.getAnalyzeCalls).Should(Not(BeEmpty()))
-	g.Expect(u.getMessages()).To(HaveLen(1))
+	g.Eventually(u.getMessages()).Should(HaveLen(1))
 }
 
 func TestAnalyzeSortsMessages(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	u := &updaterMock{}
+	u := &updaterMock{waitTimeout: 1 * time.Second}
 	r1 := &resource.Instance{
 		Origin: &rt.Origin{
 			Collection: basicmeta.K8SCollection1.Name(),
@@ -268,20 +289,18 @@ func TestAnalyzeSortsMessages(t *testing.T) {
 	sDefault := getTestSnapshot()
 
 	ad.Distribute(snapshots.Default, sDefault)
-	time.Sleep(1 * time.Second)
 
 	g.Eventually(a.getAnalyzeCalls).Should(ConsistOf(sDefault))
 
-	updaterMessages := u.getMessages()
-	g.Expect(updaterMessages).To(HaveLen(2))
-	g.Expect(updaterMessages[0].Resource).To(Equal(r2))
-	g.Expect(updaterMessages[1].Resource).To(Equal(r1))
+	g.Eventually(u.getMessages()).Should(HaveLen(2))
+	g.Eventually(u.getMessages()[0].Resource).Should(Equal(r2))
+	g.Eventually(u.getMessages()[1].Resource).Should(Equal(r1))
 }
 
 func TestAnalyzeSuppressesMessages(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	u := &updaterMock{}
+	u := &updaterMock{waitTimeout: 1 * time.Second}
 	r1 := &resource.Instance{
 		Origin: &rt.Origin{
 			Collection: basicmeta.K8SCollection1.Name(),
@@ -322,18 +341,17 @@ func TestAnalyzeSuppressesMessages(t *testing.T) {
 	sDefault := getTestSnapshot()
 
 	ad.Distribute(snapshots.Default, sDefault)
-	time.Sleep(1 * time.Second)
 
 	g.Eventually(a.getAnalyzeCalls).Should(ConsistOf(sDefault))
-	updaterMessages := u.getMessages()
-	g.Expect(updaterMessages).To(HaveLen(1))
-	g.Expect(updaterMessages[0].Resource).To(Equal(r2))
+
+	g.Eventually(u.getMessages()).Should(HaveLen(1))
+	g.Eventually(u.getMessages()[0].Resource).Should(Equal(r2))
 }
 
 func TestAnalyzeSuppressesMessagesWithWildcards(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	u := &updaterMock{}
+	u := &updaterMock{waitTimeout: 1 * time.Second}
 	// r1 and r2 have the same prefix, but r3 does not
 	r1 := &resource.Instance{
 		Origin: &rt.Origin{
@@ -381,12 +399,11 @@ func TestAnalyzeSuppressesMessagesWithWildcards(t *testing.T) {
 	sDefault := getTestSnapshot()
 
 	ad.Distribute(snapshots.Default, sDefault)
-	time.Sleep(1 * time.Second)
 
 	g.Eventually(a.getAnalyzeCalls).Should(ConsistOf(sDefault))
-	updaterMessages := u.getMessages()
-	g.Expect(updaterMessages).To(HaveLen(1))
-	g.Expect(updaterMessages[0].Resource).To(Equal(r3))
+
+	g.Eventually(u.getMessages()).Should(HaveLen(1))
+	g.Eventually(u.getMessages()[0].Resource).Should(Equal(r3))
 }
 
 func TestAnalyzeSuppressesMessagesWhenResourceIsAnnotated(t *testing.T) {
@@ -436,7 +453,7 @@ func TestAnalyzeSuppressesMessagesWhenResourceIsAnnotated(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
-			u := &updaterMock{}
+			u := &updaterMock{waitTimeout: 1 * time.Second}
 			r := &resource.Instance{
 				Metadata: resource.Metadata{
 					Annotations: tc.annotations,
@@ -468,10 +485,10 @@ func TestAnalyzeSuppressesMessagesWhenResourceIsAnnotated(t *testing.T) {
 
 			g.Eventually(a.getAnalyzeCalls).Should(ConsistOf(sDefault))
 			if tc.wantSuppress {
-				g.Expect(u.getMessages()).To(HaveLen(0))
+				g.Eventually(u.getMessages()).Should(HaveLen(0))
 			} else {
-				g.Expect(u.getMessages()).To(HaveLen(1))
-				g.Expect(u.getMessages()[0].Resource).To(Equal(r))
+				g.Eventually(u.getMessages()).Should(HaveLen(1))
+				g.Eventually(u.getMessages()[0].Resource).Should(Equal(r))
 			}
 		})
 	}
@@ -501,11 +518,22 @@ func newSchema(name string) collection.Schema {
 }
 
 var _ resource.Origin = fakeOrigin{}
+var _ resource.Reference = fakeReference{}
 
 type fakeOrigin struct {
 	namespace    resource.Namespace
 	friendlyName string
+	reference    fakeReference
 }
 
 func (f fakeOrigin) Namespace() resource.Namespace { return f.namespace }
 func (f fakeOrigin) FriendlyName() string          { return f.friendlyName }
+func (f fakeOrigin) Reference() resource.Reference { return f.reference }
+
+type fakeReference struct {
+	name string
+}
+
+func (r fakeReference) String() string {
+	return r.name
+}

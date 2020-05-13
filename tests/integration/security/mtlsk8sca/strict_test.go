@@ -19,8 +19,8 @@ import (
 
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/echo"
-	"istio.io/istio/pkg/test/framework/components/environment"
 	"istio.io/istio/pkg/test/framework/components/namespace"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/tests/integration/security/util/reachability"
 )
 
@@ -35,7 +35,7 @@ func TestMtlsStrictK8sCA(t *testing.T) {
 	framework.NewTest(t).
 		Run(func(ctx framework.TestContext) {
 
-			rctx := reachability.CreateContext(ctx, g, p)
+			rctx := reachability.CreateContext(ctx, p)
 			systemNM := namespace.ClaimSystemNamespaceOrFail(ctx, ctx)
 
 			testCases := []reachability.TestCase{

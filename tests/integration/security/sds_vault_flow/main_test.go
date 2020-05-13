@@ -18,12 +18,11 @@ import (
 	"testing"
 
 	"istio.io/istio/pkg/test/framework"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/components/galley"
 	"istio.io/istio/pkg/test/framework/components/istio"
 	"istio.io/istio/pkg/test/framework/components/pilot"
 	"istio.io/istio/pkg/test/framework/label"
 	"istio.io/istio/pkg/test/framework/resource"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 )
 
 const (
@@ -46,7 +45,6 @@ const (
 
 var (
 	inst istio.Instance
-	g    galley.Instance
 	p    pilot.Instance
 )
 
@@ -58,14 +56,10 @@ func TestMain(m *testing.M) {
 		Skip("https://github.com/istio/istio/issues/17572").
 		// SDS requires Kubernetes 1.13
 		RequireEnvironmentVersion("1.13").
+		RequireSingleCluster().
 		SetupOnEnv(environment.Kube, istio.Setup(&inst, setupConfig)).
 		Setup(func(ctx resource.Context) (err error) {
-			if g, err = galley.New(ctx, galley.Config{}); err != nil {
-				return err
-			}
-			if p, err = pilot.New(ctx, pilot.Config{
-				Galley: g,
-			}); err != nil {
+			if p, err = pilot.New(ctx, pilot.Config{}); err != nil {
 				return err
 			}
 			return nil
@@ -80,7 +74,6 @@ func setupConfig(cfg *istio.Config) {
 	cfg.Values["sidecarInjectorWebhook.rewriteAppHTTPProbe"] = "true"
 	cfg.Values["global.controlPlaneSecurityEnabled"] = "false"
 	cfg.Values["global.mtls.enabled"] = "true"
-	cfg.Values["global.sds.enabled"] = "true"
 	cfg.Values["global.sds.udsPath"] = "unix:/var/run/sds/uds_path"
 	cfg.Values["global.sds.customTokenDirectory"] = "/etc/sdstoken"
 	cfg.Values["nodeagent.enabled"] = "true"

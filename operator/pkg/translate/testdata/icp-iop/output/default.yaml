@@ -1,4 +1,4 @@
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   addonComponents:
@@ -49,17 +49,6 @@ spec:
             maxSurge: 100%
             maxUnavailable: 25%
       name: istio-egressgateway
-    galley:
-      enabled: true
-      k8s:
-        replicaCount: 1
-        resources:
-          requests:
-            cpu: 100m
-        strategy:
-          rollingUpdate:
-            maxSurge: 100%
-            maxUnavailable: 25%
     ingressGateways:
     - enabled: true
       k8s:
@@ -153,14 +142,6 @@ spec:
           rollingUpdate:
             maxSurge: 100%
             maxUnavailable: 25%
-    sidecarInjector:
-      enabled: true
-      k8s:
-        replicaCount: 1
-        strategy:
-          rollingUpdate:
-            maxSurge: 100%
-            maxUnavailable: 25%
     telemetry:
       enabled: true
       k8s:
@@ -197,8 +178,6 @@ spec:
             maxSurge: 100%
             maxUnavailable: 25%
   hub: gcr.io/istio-testing
-  meshConfig:
-    rootNamespace: istio-system
   tag: 1.4-dev
   values:
     certmanager:
@@ -206,9 +185,6 @@ spec:
       image: cert-manager-controller
       tag: v0.6.2
     clusterResources: true
-    galley:
-      enableAnalysis: false
-      image: galley
     gateways:
       istio-egressgateway:
         autoscaleEnabled: true
@@ -274,16 +250,6 @@ spec:
         - name: tls
           port: 15443
           targetPort: 15443
-        sds:
-          enabled: false
-          image: node-agent-k8s
-          resources:
-            limits:
-              cpu: 2000m
-              memory: 1024Mi
-            requests:
-              cpu: 100m
-              memory: 128Mi
         secretVolumes:
         - mountPath: /etc/istio/ingressgateway-certs
           name: ingressgateway-certs
@@ -349,7 +315,6 @@ spec:
         clusterDomain: cluster.local
         componentLogLevel: misc:error
         concurrency: 2
-        dnsRefreshRate: 300s
         enableCoreDump: false
         envoyAccessLogService:
           enabled: false
@@ -406,8 +371,6 @@ spec:
         lightstep:
           accessToken: ""
           address: ""
-          cacertPath: ""
-          secure: true
         zipkin:
           address: ""
       trustDomain: cluster.local
@@ -529,8 +492,6 @@ spec:
         sessionAffinityEnabled: false
         tolerations: []
         useMCP: true
-    nodeagent:
-      image: node-agent-k8s
     pilot:
       appNamespaces: []
       autoscaleEnabled: true
@@ -587,12 +548,11 @@ spec:
       trustDomain: cluster.local
     sidecarInjectorWebhook:
       enableNamespacesByDefault: false
-      image: sidecar_injector
       injectLabel: istio-injection
       objectSelector:
         autoInject: true
         enabled: false
-      rewriteAppHTTPProbe: false
+      rewriteAppHTTPProbe: true
       selfSigned: false
     telemetry:
       enabled: true

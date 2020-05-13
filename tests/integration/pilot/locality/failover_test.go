@@ -19,13 +19,14 @@ import (
 	"testing"
 	"time"
 
+	"istio.io/pkg/log"
+
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/echo"
 	"istio.io/istio/pkg/test/framework/components/echo/echoboot"
-	"istio.io/istio/pkg/test/framework/components/environment"
 	"istio.io/istio/pkg/test/framework/components/namespace"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/pkg/test/util/retry"
-	"istio.io/pkg/log"
 )
 
 // This test allows for Locality Load Balancing Failover testing without needing Kube nodes in multiple regions.
@@ -91,7 +92,7 @@ func TestFailover(t *testing.T) {
 
 					fakeHostname := fmt.Sprintf("fake-cds-external-service-%v.com", r.Int())
 
-					deploy(ctx, ns, serviceConfig{
+					deploy(ctx, ctx, ns, serviceConfig{
 						Name:                       "failover-cds",
 						Host:                       fakeHostname,
 						Namespace:                  ns.Name(),
@@ -129,7 +130,7 @@ func TestFailover(t *testing.T) {
 						BuildOrFail(ctx)
 
 					fakeHostname := fmt.Sprintf("fake-eds-external-service-%v.com", r.Int())
-					deploy(ctx, ns, serviceConfig{
+					deploy(ctx, ctx, ns, serviceConfig{
 						Name:                       "failover-eds",
 						Host:                       fakeHostname,
 						Namespace:                  ns.Name(),

@@ -18,18 +18,16 @@ import (
 	"testing"
 
 	"istio.io/istio/pkg/test/framework"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/components/galley"
 	"istio.io/istio/pkg/test/framework/components/istio"
 	"istio.io/istio/pkg/test/framework/components/pilot"
 	"istio.io/istio/pkg/test/framework/components/prometheus"
 	"istio.io/istio/pkg/test/framework/label"
 	"istio.io/istio/pkg/test/framework/resource"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 )
 
 var (
 	inst istio.Instance
-	g    galley.Instance
 	p    pilot.Instance
 	prom prometheus.Instance
 )
@@ -42,17 +40,13 @@ func TestMain(m *testing.M) {
 		RequireEnvironment(environment.Kube).
 		// SDS requires Kubernetes 1.13
 		RequireEnvironmentVersion("1.13").
+		RequireSingleCluster().
 		SetupOnEnv(environment.Kube, istio.Setup(&inst, setupConfig)).
 		Setup(func(ctx resource.Context) (err error) {
-			if g, err = galley.New(ctx, galley.Config{}); err != nil {
+			if p, err = pilot.New(ctx, pilot.Config{}); err != nil {
 				return err
 			}
-			if p, err = pilot.New(ctx, pilot.Config{
-				Galley: g,
-			}); err != nil {
-				return err
-			}
-			if prom, err = prometheus.New(ctx); err != nil {
+			if prom, err = prometheus.New(ctx, prometheus.Config{}); err != nil {
 				return err
 			}
 			return nil
@@ -65,6 +59,13 @@ func setupConfig(cfg *istio.Config) {
 	if cfg == nil {
 		return
 	}
-	cfg.ValuesFile = "values-istio-sds-auth.yaml"
-	cfg.Values["gateways.istio-egressgateway.enabled"] = "true"
+	cfg.ControlPlaneValues = `
+components:
+  gateways:
+    istio-egressgateway:
+      enabled: true
+addonComponents:
+  prometheus:
+    enabled: true
+`
 }

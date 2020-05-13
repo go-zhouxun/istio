@@ -23,9 +23,10 @@ import (
 
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
-	endpoint "github.com/envoyproxy/go-control-plane/envoy/api/v2/endpoint"
 	listener "github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
 	route "github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
+	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	http_conn "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
 	gogoproto "github.com/gogo/protobuf/proto"
 	"github.com/golang/protobuf/proto"
@@ -36,8 +37,8 @@ import (
 	"istio.io/pkg/log"
 
 	"istio.io/istio/pilot/pkg/model"
+	"istio.io/istio/pilot/pkg/networking"
 	"istio.io/istio/pilot/pkg/networking/plugin"
-	mccpb "istio.io/istio/pilot/pkg/networking/plugin/mixer/client"
 	mpb "istio.io/istio/pilot/pkg/networking/plugin/mixer/client"
 	"istio.io/istio/pilot/pkg/networking/util"
 	"istio.io/istio/pkg/config/host"
@@ -116,7 +117,7 @@ func skipMixerHTTPFilter(dir direction, mesh *meshconfig.MeshConfig, node *model
 }
 
 // OnOutboundListener implements the Callbacks interface method.
-func (mixerplugin) OnOutboundListener(in *plugin.InputParams, mutable *plugin.MutableObjects) error {
+func (mixerplugin) OnOutboundListener(in *plugin.InputParams, mutable *networking.MutableObjects) error {
 	if in.Push.Mesh.MixerCheckServer == "" && in.Push.Mesh.MixerReportServer == "" {
 		return nil
 	}
@@ -126,7 +127,7 @@ func (mixerplugin) OnOutboundListener(in *plugin.InputParams, mutable *plugin.Mu
 	skipHTTPFilter := skipMixerHTTPFilter(outbound, in.Push.Mesh, in.Node)
 
 	switch in.ListenerProtocol {
-	case plugin.ListenerProtocolHTTP:
+	case networking.ListenerProtocolHTTP:
 		if skipHTTPFilter {
 			return nil
 		}
@@ -135,7 +136,7 @@ func (mixerplugin) OnOutboundListener(in *plugin.InputParams, mutable *plugin.Mu
 			mutable.FilterChains[cnum].HTTP = append(mutable.FilterChains[cnum].HTTP, httpFilter)
 		}
 		return nil
-	case plugin.ListenerProtocolTCP:
+	case networking.ListenerProtocolTCP:
 		tcpFilter := buildOutboundTCPFilter(in.Push.Mesh, attrs, in.Node, in.Service)
 		if in.Node.Type == model.Router {
 			// For gateways, due to TLS termination, a listener marked as TCP could very well
@@ -143,7 +144,7 @@ func (mixerplugin) OnOutboundListener(in *plugin.InputParams, mutable *plugin.Mu
 			// to decide the type of filter to attach
 			httpFilter := buildOutboundHTTPFilter(in.Push.Mesh, attrs, in.Node)
 			for cnum := range mutable.FilterChains {
-				if mutable.FilterChains[cnum].ListenerProtocol == plugin.ListenerProtocolHTTP && !skipHTTPFilter {
+				if mutable.FilterChains[cnum].ListenerProtocol == networking.ListenerProtocolHTTP && !skipHTTPFilter {
 					mutable.FilterChains[cnum].HTTP = append(mutable.FilterChains[cnum].HTTP, httpFilter)
 				} else {
 					mutable.FilterChains[cnum].TCP = append(mutable.FilterChains[cnum].TCP, tcpFilter)
@@ -165,16 +166,16 @@ func (mixerplugin) OnOutboundListener(in *plugin.InputParams, mutable *plugin.Mu
 			}
 		}
 		return nil
-	case plugin.ListenerProtocolAuto:
+	case networking.ListenerProtocolAuto:
 		tcpFilter := buildOutboundTCPFilter(in.Push.Mesh, attrs, in.Node, in.Service)
 		httpFilter := buildOutboundHTTPFilter(in.Push.Mesh, attrs, in.Node)
 		for cnum := range mutable.FilterChains {
 			switch mutable.FilterChains[cnum].ListenerProtocol {
-			case plugin.ListenerProtocolHTTP:
+			case networking.ListenerProtocolHTTP:
 				if !skipHTTPFilter {
 					mutable.FilterChains[cnum].HTTP = append(mutable.FilterChains[cnum].HTTP, httpFilter)
 				}
-			case plugin.ListenerProtocolTCP:
+			case networking.ListenerProtocolTCP:
 				mutable.FilterChains[cnum].TCP = append(mutable.FilterChains[cnum].TCP, tcpFilter)
 			}
 		}
@@ -185,7 +186,7 @@ func (mixerplugin) OnOutboundListener(in *plugin.InputParams, mutable *plugin.Mu
 }
 
 // OnInboundListener implements the Callbacks interface method.
-func (mixerplugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.MutableObjects) error {
+func (mixerplugin) OnInboundListener(in *plugin.InputParams, mutable *networking.MutableObjects) error {
 	if in.Push.Mesh.MixerCheckServer == "" && in.Push.Mesh.MixerReportServer == "" {
 		return nil
 	}
@@ -221,7 +222,7 @@ func (mixerplugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.Mut
 	skipHTTPFilter := skipMixerHTTPFilter(inbound, in.Push.Mesh, in.Node)
 
 	switch in.ListenerProtocol {
-	case plugin.ListenerProtocolHTTP:
+	case networking.ListenerProtocolHTTP:
 		if skipHTTPFilter {
 			return nil
 		}
@@ -230,22 +231,22 @@ func (mixerplugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.Mut
 			mutable.FilterChains[cnum].HTTP = append(mutable.FilterChains[cnum].HTTP, filter)
 		}
 		return nil
-	case plugin.ListenerProtocolTCP:
+	case networking.ListenerProtocolTCP:
 		filter := buildInboundTCPFilter(in.Push.Mesh, attrs, in.Node)
 		for cnum := range mutable.FilterChains {
 			mutable.FilterChains[cnum].TCP = append(mutable.FilterChains[cnum].TCP, filter)
 		}
 		return nil
-	case plugin.ListenerProtocolAuto:
+	case networking.ListenerProtocolAuto:
 		httpFilter := buildInboundHTTPFilter(in.Push.Mesh, attrs, in.Node)
 		tcpFilter := buildInboundTCPFilter(in.Push.Mesh, attrs, in.Node)
 		for cnum := range mutable.FilterChains {
 			switch mutable.FilterChains[cnum].ListenerProtocol {
-			case plugin.ListenerProtocolHTTP:
+			case networking.ListenerProtocolHTTP:
 				if !skipHTTPFilter {
 					mutable.FilterChains[cnum].HTTP = append(mutable.FilterChains[cnum].HTTP, httpFilter)
 				}
-			case plugin.ListenerProtocolTCP:
+			case networking.ListenerProtocolTCP:
 				mutable.FilterChains[cnum].TCP = append(mutable.FilterChains[cnum].TCP, tcpFilter)
 			}
 		}
@@ -257,11 +258,11 @@ func (mixerplugin) OnInboundListener(in *plugin.InputParams, mutable *plugin.Mut
 }
 
 // OnVirtualListener implements the Plugin interface method.
-func (mixerplugin) OnVirtualListener(in *plugin.InputParams, mutable *plugin.MutableObjects) error {
+func (mixerplugin) OnVirtualListener(in *plugin.InputParams, mutable *networking.MutableObjects) error {
 	if in.Push.Mesh.MixerCheckServer == "" && in.Push.Mesh.MixerReportServer == "" {
 		return nil
 	}
-	if in.ListenerProtocol == plugin.ListenerProtocolTCP {
+	if in.ListenerProtocol == networking.ListenerProtocolTCP {
 		attrs := createOutboundListenerAttributes(in)
 		tcpFilter := buildOutboundTCPFilter(in.Push.Mesh, attrs, in.Node, in.Service)
 		for cnum := range mutable.FilterChains {
@@ -272,20 +273,20 @@ func (mixerplugin) OnVirtualListener(in *plugin.InputParams, mutable *plugin.Mut
 }
 
 // OnOutboundCluster implements the Plugin interface method.
-func (mixerplugin) OnOutboundCluster(in *plugin.InputParams, cluster *xdsapi.Cluster) {
+func (mixerplugin) OnOutboundCluster(in *plugin.InputParams, c *cluster.Cluster) {
 	if !in.Push.Mesh.SidecarToTelemetrySessionAffinity {
 		// if session affinity is not enabled, do nothing
 		return
 	}
 	withoutPort := strings.Split(in.Push.Mesh.MixerReportServer, ":")
-	if strings.Contains(cluster.Name, withoutPort[0]) {
+	if strings.Contains(c.Name, withoutPort[0]) {
 		// config telemetry service discovery to be strict_dns for session affinity.
 		// To enable session affinity, DNS needs to provide only one and the same telemetry instance IP
 		// (e.g. in k8s, telemetry service spec needs to have SessionAffinity: ClientIP)
-		cluster.ClusterDiscoveryType = &xdsapi.Cluster_Type{Type: xdsapi.Cluster_STRICT_DNS}
+		c.ClusterDiscoveryType = &cluster.Cluster_Type{Type: cluster.Cluster_STRICT_DNS}
 		addr := util.BuildAddress(in.Service.Address, uint32(in.Port.Port))
-		cluster.LoadAssignment = &xdsapi.ClusterLoadAssignment{
-			ClusterName: cluster.Name,
+		c.LoadAssignment = &endpoint.ClusterLoadAssignment{
+			ClusterName: c.Name,
 			Endpoints: []*endpoint.LocalityLbEndpoints{
 				{
 					LbEndpoints: []*endpoint.LbEndpoint{
@@ -298,12 +299,12 @@ func (mixerplugin) OnOutboundCluster(in *plugin.InputParams, cluster *xdsapi.Clu
 				},
 			},
 		}
-		cluster.EdsClusterConfig = nil
+		c.EdsClusterConfig = nil
 	}
 }
 
 // OnInboundCluster implements the Plugin interface method.
-func (mixerplugin) OnInboundCluster(in *plugin.InputParams, cluster *xdsapi.Cluster) {
+func (mixerplugin) OnInboundCluster(in *plugin.InputParams, cluster *cluster.Cluster) {
 	// do nothing
 }
 
@@ -327,7 +328,7 @@ func (mixerplugin) OnInboundRouteConfiguration(in *plugin.InputParams, routeConf
 		return
 	}
 	switch in.ListenerProtocol {
-	case plugin.ListenerProtocolHTTP:
+	case networking.ListenerProtocolHTTP:
 		// copy structs in place
 		for i := 0; i < len(routeConfiguration.VirtualHosts); i++ {
 			virtualHost := routeConfiguration.VirtualHosts[i]
@@ -339,19 +340,24 @@ func (mixerplugin) OnInboundRouteConfiguration(in *plugin.InputParams, routeConf
 			routeConfiguration.VirtualHosts[i] = virtualHost
 		}
 
-	case plugin.ListenerProtocolTCP:
+	case networking.ListenerProtocolTCP:
 	default:
 		log.Warn("Unknown listener type in mixer#OnOutboundRouteConfiguration")
 	}
 }
 
 // OnInboundFilterChains is called whenever a plugin needs to setup the filter chains, including relevant filter chain configuration.
-func (mixerplugin) OnInboundFilterChains(in *plugin.InputParams) []plugin.FilterChain {
+func (mixerplugin) OnInboundFilterChains(in *plugin.InputParams) []networking.FilterChain {
 	return nil
 }
 
 // OnInboundPassthrough is called whenever a new passthrough filter chain is added to the LDS output.
-func (mixerplugin) OnInboundPassthrough(in *plugin.InputParams, mutable *plugin.MutableObjects) error {
+func (mixerplugin) OnInboundPassthrough(in *plugin.InputParams, mutable *networking.MutableObjects) error {
+	return nil
+}
+
+// OnInboundPassthroughFilterChains is called for plugin to update the pass through filter chain.
+func (mixerplugin) OnInboundPassthroughFilterChains(in *plugin.InputParams) []networking.FilterChain {
 	return nil
 }
 
@@ -366,22 +372,22 @@ func buildUpstreamName(address string) string {
 	return model.BuildSubsetKey(model.TrafficDirectionOutbound, "", host.Name(hostname), v)
 }
 
-func buildTransport(mesh *meshconfig.MeshConfig, node *model.Proxy) *mccpb.TransportConfig {
+func buildTransport(mesh *meshconfig.MeshConfig, node *model.Proxy) *mpb.TransportConfig {
 	// default to mesh
-	policy := mccpb.NetworkFailPolicy_FAIL_CLOSE
+	policy := mpb.NetworkFailPolicy_FAIL_CLOSE
 	if mesh.PolicyCheckFailOpen {
-		policy = mccpb.NetworkFailPolicy_FAIL_OPEN
+		policy = mpb.NetworkFailPolicy_FAIL_OPEN
 	}
 
 	// apply proxy-level overrides
 	switch node.Metadata.PolicyCheck {
 	case policyCheckEnable:
-		policy = mccpb.NetworkFailPolicy_FAIL_CLOSE
+		policy = mpb.NetworkFailPolicy_FAIL_CLOSE
 	case policyCheckEnableAllow, policyCheckDisable:
-		policy = mccpb.NetworkFailPolicy_FAIL_OPEN
+		policy = mpb.NetworkFailPolicy_FAIL_OPEN
 	}
 
-	networkFailPolicy := &mccpb.NetworkFailPolicy{Policy: policy}
+	networkFailPolicy := &mpb.NetworkFailPolicy{Policy: policy}
 
 	networkFailPolicy.MaxRetry = defaultRetries
 	if len(node.Metadata.PolicyCheckRetries) > 0 {
@@ -413,7 +419,7 @@ func buildTransport(mesh *meshconfig.MeshConfig, node *model.Proxy) *mccpb.Trans
 		}
 	}
 
-	res := &mccpb.TransportConfig{
+	res := &mpb.TransportConfig{
 		CheckCluster:          buildUpstreamName(mesh.MixerCheckServer),
 		ReportCluster:         buildUpstreamName(mesh.MixerReportServer),
 		NetworkFailPolicy:     networkFailPolicy,
@@ -425,9 +431,9 @@ func buildTransport(mesh *meshconfig.MeshConfig, node *model.Proxy) *mccpb.Trans
 }
 
 func buildOutboundHTTPFilter(mesh *meshconfig.MeshConfig, attrs attributes, node *model.Proxy) *http_conn.HttpFilter {
-	cfg := &mccpb.HttpClientConfig{
+	cfg := &mpb.HttpClientConfig{
 		DefaultDestinationService: defaultConfig,
-		ServiceConfigs: map[string]*mccpb.ServiceConfig{
+		ServiceConfigs: map[string]*mpb.ServiceConfig{
 			defaultConfig: {
 				DisableCheckCalls:  disablePolicyChecks(outbound, mesh, node),
 				DisableReportCalls: mesh.GetDisableMixerHttpReports(),
@@ -450,9 +456,9 @@ func buildOutboundHTTPFilter(mesh *meshconfig.MeshConfig, attrs attributes, node
 }
 
 func buildInboundHTTPFilter(mesh *meshconfig.MeshConfig, attrs attributes, node *model.Proxy) *http_conn.HttpFilter {
-	cfg := &mccpb.HttpClientConfig{
+	cfg := &mpb.HttpClientConfig{
 		DefaultDestinationService: defaultConfig,
-		ServiceConfigs: map[string]*mccpb.ServiceConfig{
+		ServiceConfigs: map[string]*mpb.ServiceConfig{
 			defaultConfig: {
 				DisableCheckCalls:  disablePolicyChecks(inbound, mesh, node),
 				DisableReportCalls: mesh.GetDisableMixerHttpReports(),
@@ -470,19 +476,22 @@ func buildInboundHTTPFilter(mesh *meshconfig.MeshConfig, attrs attributes, node 
 	return out
 }
 
-func addFilterConfigToRoute(in *plugin.InputParams, httpRoute *route.Route, attrs attributes) {
-	httpRoute.TypedPerFilterConfig = addTypedServiceConfig(httpRoute.TypedPerFilterConfig, &mccpb.ServiceConfig{
+func addFilterConfigToRoute(in *plugin.InputParams, httpRoute *route.Route, attrs attributes,
+	quotaSpec []*mpb.QuotaSpec) {
+	httpRoute.TypedPerFilterConfig = addTypedServiceConfig(httpRoute.TypedPerFilterConfig, &mpb.ServiceConfig{
 		DisableCheckCalls:  disablePolicyChecks(outbound, in.Push.Mesh, in.Node),
 		DisableReportCalls: in.Push.Mesh.GetDisableMixerHttpReports(),
 		MixerAttributes:    &mpb.Attributes{Attributes: attrs},
 		ForwardAttributes:  &mpb.Attributes{Attributes: attrs},
+		QuotaSpec:          quotaSpec,
 	})
 }
 
 func modifyOutboundRouteConfig(push *model.PushContext, in *plugin.InputParams, virtualHostname string, httpRoute *route.Route) *route.Route {
+	isPolicyCheckDisabled := disablePolicyChecks(outbound, in.Push.Mesh, in.Node)
 	// default config, to be overridden by per-weighted cluster
-	httpRoute.TypedPerFilterConfig = addTypedServiceConfig(httpRoute.TypedPerFilterConfig, &mccpb.ServiceConfig{
-		DisableCheckCalls:  disablePolicyChecks(outbound, in.Push.Mesh, in.Node),
+	httpRoute.TypedPerFilterConfig = addTypedServiceConfig(httpRoute.TypedPerFilterConfig, &mpb.ServiceConfig{
+		DisableCheckCalls:  isPolicyCheckDisabled,
 		DisableReportCalls: in.Push.Mesh.GetDisableMixerHttpReports(),
 	})
 	switch action := httpRoute.Action.(type) {
@@ -497,18 +506,18 @@ func modifyOutboundRouteConfig(push *model.PushContext, in *plugin.InputParams, 
 				svc := in.Node.SidecarScope.ServiceForHostname(hostname, push.ServiceByHostnameAndNamespace)
 				attrs = addDestinationServiceAttributes(make(attributes), svc)
 			}
-			addFilterConfigToRoute(in, httpRoute, attrs)
-
+			addFilterConfigToRoute(in, httpRoute, attrs, getQuotaSpec(in, hostname, isPolicyCheckDisabled))
 		case *route.RouteAction_WeightedClusters:
 			for _, weighted := range upstreams.WeightedClusters.Clusters {
 				_, _, hostname, _ := model.ParseSubsetKey(weighted.Name)
 				svc := in.Node.SidecarScope.ServiceForHostname(hostname, push.ServiceByHostnameAndNamespace)
 				attrs := addDestinationServiceAttributes(make(attributes), svc)
-				weighted.TypedPerFilterConfig = addTypedServiceConfig(weighted.TypedPerFilterConfig, &mccpb.ServiceConfig{
-					DisableCheckCalls:  disablePolicyChecks(outbound, in.Push.Mesh, in.Node),
+				weighted.TypedPerFilterConfig = addTypedServiceConfig(weighted.TypedPerFilterConfig, &mpb.ServiceConfig{
+					DisableCheckCalls:  isPolicyCheckDisabled,
 					DisableReportCalls: in.Push.Mesh.GetDisableMixerHttpReports(),
 					MixerAttributes:    &mpb.Attributes{Attributes: attrs},
 					ForwardAttributes:  &mpb.Attributes{Attributes: attrs},
+					QuotaSpec:          getQuotaSpec(in, hostname, isPolicyCheckDisabled),
 				})
 			}
 		case *route.RouteAction_ClusterHeader:
@@ -518,10 +527,10 @@ func modifyOutboundRouteConfig(push *model.PushContext, in *plugin.InputParams, 
 	// route.Route_DirectResponse is used for the BlackHole cluster configuration,
 	// hence adding the attributes for the mixer filter
 	case *route.Route_DirectResponse:
-		if virtualHostname == util.BlackHoleRouteName {
+		if virtualHostname == util.BlackHole {
 			hostname := host.Name(util.BlackHoleCluster)
 			attrs := addVirtualDestinationServiceAttributes(make(attributes), hostname)
-			addFilterConfigToRoute(in, httpRoute, attrs)
+			addFilterConfigToRoute(in, httpRoute, attrs, nil)
 		}
 	// route.Route_Redirect is not used currently, so no attributes are added here
 	case *route.Route_Redirect:
@@ -531,22 +540,22 @@ func modifyOutboundRouteConfig(push *model.PushContext, in *plugin.InputParams, 
 	return httpRoute
 }
 
-func buildInboundRouteConfig(in *plugin.InputParams, instance *model.ServiceInstance) *mccpb.ServiceConfig {
+func buildInboundRouteConfig(in *plugin.InputParams, instance *model.ServiceInstance) *mpb.ServiceConfig {
 	configStore := in.Push.IstioConfigStore
 
 	attrs := addDestinationServiceAttributes(make(attributes), instance.Service)
-	out := &mccpb.ServiceConfig{
+	out := &mpb.ServiceConfig{
 		DisableCheckCalls:  disablePolicyChecks(inbound, in.Push.Mesh, in.Node),
 		DisableReportCalls: in.Push.Mesh.GetDisableMixerHttpReports(),
 		MixerAttributes:    &mpb.Attributes{Attributes: attrs},
 	}
 
 	if configStore != nil {
-		quotaSpecs := configStore.QuotaSpecByDestination(instance)
+		quotaSpecs := configStore.QuotaSpecByDestination(instance.Service.Hostname)
 		model.SortQuotaSpec(quotaSpecs)
 		for _, quotaSpec := range quotaSpecs {
 			bytes, _ := gogoproto.Marshal(quotaSpec.Spec)
-			converted := &mccpb.QuotaSpec{}
+			converted := &mpb.QuotaSpec{}
 			if err := proto.Unmarshal(bytes, converted); err != nil {
 				log.Warnf("failing to convert from gogo to golang: %v", err)
 				continue
@@ -564,7 +573,7 @@ func buildOutboundTCPFilter(mesh *meshconfig.MeshConfig, attrsIn attributes, nod
 		attrs = addDestinationServiceAttributes(attrs, destination)
 	}
 
-	cfg := &mccpb.TcpClientConfig{
+	cfg := &mpb.TcpClientConfig{
 		DisableCheckCalls: disablePolicyChecks(outbound, mesh, node),
 		MixerAttributes:   &mpb.Attributes{Attributes: attrs},
 		Transport:         buildTransport(mesh, node),
@@ -579,7 +588,7 @@ func buildOutboundTCPFilter(mesh *meshconfig.MeshConfig, attrsIn attributes, nod
 }
 
 func buildInboundTCPFilter(mesh *meshconfig.MeshConfig, attrs attributes, node *model.Proxy) *listener.Filter {
-	cfg := &mccpb.TcpClientConfig{
+	cfg := &mpb.TcpClientConfig{
 		DisableCheckCalls: disablePolicyChecks(inbound, mesh, node),
 		MixerAttributes:   &mpb.Attributes{Attributes: attrs},
 		Transport:         buildTransport(mesh, node),
@@ -592,7 +601,7 @@ func buildInboundTCPFilter(mesh *meshconfig.MeshConfig, attrs attributes, node *
 	return out
 }
 
-func addTypedServiceConfig(filterConfigs map[string]*any.Any, config *mccpb.ServiceConfig) map[string]*any.Any {
+func addTypedServiceConfig(filterConfigs map[string]*any.Any, config *mpb.ServiceConfig) map[string]*any.Any {
 	if filterConfigs == nil {
 		filterConfigs = make(map[string]*any.Any)
 	}
@@ -691,4 +700,18 @@ func attrsCopy(attrs attributes) attributes {
 		out[k] = v
 	}
 	return out
+}
+
+func getQuotaSpec(in *plugin.InputParams, hostname host.Name, isPolicyCheckDisabled bool) []*mpb.QuotaSpec {
+	var quotaSpec []*mpb.QuotaSpec
+	if in.Push == nil || in.Push.IstioConfigStore == nil || isPolicyCheckDisabled {
+		return quotaSpec
+	}
+	config := in.Push.IstioConfigStore
+	quotaSpecs := config.QuotaSpecByDestination(hostname)
+	model.SortQuotaSpec(quotaSpecs)
+	for _, config := range quotaSpecs {
+		quotaSpec = append(quotaSpec, config.Spec.(*mpb.QuotaSpec))
+	}
+	return quotaSpec
 }

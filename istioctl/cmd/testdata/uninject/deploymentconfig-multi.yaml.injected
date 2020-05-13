@@ -156,7 +156,7 @@ items:
           - -b
           - "80"
           - -d
-          - "15020"
+          - "15090,15020"
           image: docker.io/istio/proxy_init:unittest
           imagePullPolicy: IfNotPresent
           name: istio-init
@@ -177,9 +177,9 @@ items:
               - ALL
             privileged: false
             readOnlyRootFilesystem: false
-            runAsGroup: 1337
-            runAsNonRoot: true
-            runAsUser: 1337
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
         volumes:
         - emptyDir:
             medium: Memory

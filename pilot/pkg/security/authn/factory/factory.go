@@ -25,9 +25,8 @@ import (
 // for the given service instance.
 func NewPolicyApplier(push *model.PushContext,
 	serviceInstance *model.ServiceInstance, namespace string, labels labels.Collection) authn.PolicyApplier {
-	service := serviceInstance.Service
-	port := serviceInstance.ServicePort
-	authnPolicy, _ := push.AuthenticationPolicyForWorkload(service, port)
-	return v1beta1.NewPolicyApplier(push.AuthnBetaPolicies.GetJwtPoliciesForWorkload(
-		namespace, labels), authnPolicy)
+	return v1beta1.NewPolicyApplier(
+		push.AuthnBetaPolicies.GetRootNamespace(),
+		push.AuthnBetaPolicies.GetJwtPoliciesForWorkload(namespace, labels),
+		push.AuthnBetaPolicies.GetPeerAuthenticationsForWorkload(namespace, labels))
 }

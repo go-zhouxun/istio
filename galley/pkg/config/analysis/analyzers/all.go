@@ -22,6 +22,7 @@ import (
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/deprecation"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/gateway"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/injection"
+	"istio.io/istio/galley/pkg/config/analysis/analyzers/multicluster"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/schema"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/service"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/sidecar"
@@ -33,7 +34,6 @@ func All() []analysis.Analyzer {
 	analyzers := []analysis.Analyzer{
 		// Please keep this list sorted alphabetically by pkg.name for convenience
 		&annotations.K8sAnalyzer{},
-		&auth.MTLSAnalyzer{},
 		&auth.ServiceRoleBindingAnalyzer{},
 		&auth.ServiceRoleServicesAnalyzer{},
 		&deployment.ServiceAssociationAnalyzer{},
@@ -41,7 +41,8 @@ func All() []analysis.Analyzer {
 		&gateway.IngressGatewayPortAnalyzer{},
 		&gateway.SecretAnalyzer{},
 		&injection.Analyzer{},
-		&injection.VersionAnalyzer{},
+		&injection.ImageAnalyzer{},
+		&multicluster.MeshNetworksAnalyzer{},
 		&service.PortNameAnalyzer{},
 		&sidecar.DefaultSelectorAnalyzer{},
 		&sidecar.SelectorAnalyzer{},
@@ -49,6 +50,7 @@ func All() []analysis.Analyzer {
 		&virtualservice.DestinationHostAnalyzer{},
 		&virtualservice.DestinationRuleAnalyzer{},
 		&virtualservice.GatewayAnalyzer{},
+		&virtualservice.RegexAnalyzer{},
 	}
 
 	analyzers = append(analyzers, schema.AllValidationAnalyzers()...)

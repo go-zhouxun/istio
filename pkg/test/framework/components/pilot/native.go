@@ -15,12 +15,13 @@
 package pilot
 
 import (
-	"errors"
 	"io"
 	"net"
+	"os"
+	"path"
 	"time"
 
-	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-multierror"
 
 	meshapi "istio.io/api/mesh/v1alpha1"
 
@@ -36,10 +37,6 @@ import (
 var _ Instance = &nativeComponent{}
 var _ io.Closer = &nativeComponent{}
 var _ Native = &nativeComponent{}
-
-var (
-	pilotCertDir = env.IstioSrc + "/tests/testdata/certs/pilot"
-)
 
 // Native is the interface for an native pilot server.
 type Native interface {
@@ -60,11 +57,10 @@ type nativeComponent struct {
 
 // NewNativeComponent factory function for the component
 func newNative(ctx resource.Context, cfg Config) (Instance, error) {
-	if cfg.Galley == nil {
-		return nil, errors.New("galley must be provided")
-	}
-
 	e := ctx.Environment().(*native.Environment)
+	if cfg.Cluster == nil {
+		cfg.Cluster = e.Cluster
+	}
 	instance := &nativeComponent{
 		environment: ctx.Environment().(*native.Environment),
 		stopChan:    make(chan struct{}),
@@ -72,16 +68,11 @@ func newNative(ctx resource.Context, cfg Config) (Instance, error) {
 	}
 	instance.id = ctx.TrackResource(instance)
 
-	// Override the default pilot cert dir.
-	// TODO(nmittler): We should eventually replace this hack.
-	bootstrap.PilotCertDir = pilotCertDir
-
 	// Dynamically assign all ports.
 	options := bootstrap.DiscoveryServiceOptions{
 		HTTPAddr:       ":0",
 		MonitoringAddr: ":0",
 		GrpcAddr:       ":0",
-		SecureGrpcAddr: ":0",
 	}
 
 	tmpMesh := mesh.DefaultMeshConfig()
@@ -89,6 +80,7 @@ func newNative(ctx resource.Context, cfg Config) (Instance, error) {
 	if cfg.MeshConfig != nil {
 		m = cfg.MeshConfig
 	}
+	m.AccessLogFile = "./var/log/istio/access.log"
 
 	if cfg.ServiceArgs.Registries == nil {
 		cfg.ServiceArgs = bootstrap.ServiceArgs{
@@ -97,38 +89,36 @@ func newNative(ctx resource.Context, cfg Config) (Instance, error) {
 		}
 	}
 
-	bootstrapArgs := bootstrap.PilotArgs{
-		Namespace:        e.SystemNamespace,
-		DiscoveryOptions: options,
-		Config: bootstrap.ConfigArgs{
+	bootstrapArgs := bootstrap.NewPilotArgs(func(p *bootstrap.PilotArgs) {
+		p.Namespace = e.SystemNamespace
+		p.DiscoveryOptions = options
+		p.Config = bootstrap.ConfigArgs{
 			ControllerOptions: controller.Options{
 				DomainSuffix: e.Domain,
 			},
-		},
-		MeshConfig: m,
+		}
+		p.MeshConfig = m
+
 		// Use the config store for service entries as well.
-		Service: cfg.ServiceArgs,
+		p.Service = cfg.ServiceArgs
+
 		// Include all of the default plugins for integration with Mixer, etc.
-		Plugins:   bootstrap.DefaultPlugins,
-		ForceStop: true,
-	}
+		p.Plugins = bootstrap.DefaultPlugins
+		p.ForceStop = true
+	})
 
 	if bootstrapArgs.MeshConfig == nil {
 		bootstrapArgs.MeshConfig = &meshapi.MeshConfig{}
 	}
+	bootstrapArgs.Config.FileDir = cfg.Cluster.(native.Cluster).GetConfigDir()
 
-	galleyHostPort := cfg.Galley.Address()[6:]
-	// Set as MCP address, note needs to strip 'tcp://' from the address prefix
-	// Also appending incase if there are existing config sources
-	bootstrapArgs.MeshConfig.ConfigSources = append(bootstrapArgs.MeshConfig.ConfigSources, &meshapi.ConfigSource{
-		Address: galleyHostPort,
-	})
-
-	bootstrapArgs.MCPMaxMessageSize = 1024 * 1024 * 4
-
+	// Use testing certs
+	if err := os.Setenv(bootstrap.LocalCertDir.Name, path.Join(env.IstioSrc, "tests/testdata/certs/pilot")); err != nil {
+		return nil, err
+	}
 	var err error
 	// Create the server for the discovery service.
-	if instance.server, err = bootstrap.NewServer(&bootstrapArgs); err != nil {
+	if instance.server, err = bootstrap.NewServer(bootstrapArgs); err != nil {
 		return nil, err
 	}
 
@@ -172,5 +162,5 @@ func (c *nativeComponent) GetDiscoveryAddress() *net.TCPAddr {
 
 // GetSecureDiscoveryAddress gets the discovery address for pilot.
 func (c *nativeComponent) GetSecureDiscoveryAddress() *net.TCPAddr {
-	return c.server.SecureGRPCListeningAddr.(*net.TCPAddr)
+	return c.server.SecureGrpcListener.Addr().(*net.TCPAddr)
 }

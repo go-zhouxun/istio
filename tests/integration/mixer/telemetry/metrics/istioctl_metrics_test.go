@@ -24,11 +24,11 @@ import (
 )
 
 func testIstioctl(t *testing.T, ctx framework.TestContext, workload string) { // nolint:interfacer
-	istioCtl := istioctl.NewOrFail(t, ctx, istioctl.Config{})
+	istioCtl := istioctl.NewOrFail(ctx, ctx, istioctl.Config{})
 	args := []string{"experimental", "metrics", workload}
-	output, fErr := istioCtl.Invoke(args)
+	output, stderr, fErr := istioCtl.Invoke(args)
 	if fErr != nil {
-		t.Fatalf("Unwanted exception for 'istioctl %s': %v", strings.Join(args, " "), fErr)
+		t.Fatalf("Unwanted exception for 'istioctl %s': %v. Stderr: %v", strings.Join(args, " "), fErr, stderr)
 	}
 
 	// output will be something like

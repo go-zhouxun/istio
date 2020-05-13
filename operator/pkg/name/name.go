@@ -17,16 +17,40 @@ package name
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"istio.io/api/operator/v1alpha1"
+
+	iop "istio.io/istio/operator/pkg/apis/istio/v1alpha1"
+	"istio.io/istio/operator/pkg/helm"
 	"istio.io/istio/operator/pkg/tpath"
-	"istio.io/istio/operator/pkg/util"
+)
+
+// Kubernetes Kind strings.
+const (
+	CRDStr                   = "CustomResourceDefinition"
+	DaemonSetStr             = "DaemonSet"
+	DeploymentStr            = "Deployment"
+	HPAStr                   = "HorizontalPodAutoscaler"
+	NamespaceStr             = "Namespace"
+	PodStr                   = "Pod"
+	PDBStr                   = "PodDisruptionBudget"
+	ReplicationControllerStr = "ReplicationController"
+	ReplicaSetStr            = "ReplicaSet"
+	RoleStr                  = "Role"
+	RoleBindingStr           = "RoleBinding"
+	SAStr                    = "ServiceAccount"
+	ServiceStr               = "Service"
+	StatefulSetStr           = "StatefulSet"
 )
 
 const (
 	// OperatorAPINamespace is the API namespace for operator config.
 	// TODO: move this to a base definitions file when one is created.
 	OperatorAPINamespace = "operator.istio.io"
+
+	// DefaultProfileName is the name of the default profile.
+	DefaultProfileName = "default"
 )
 
 // ComponentName is a component name string, typed to constrain allowed values.
@@ -37,10 +61,8 @@ const (
 	// are used for struct traversal.
 	IstioBaseComponentName ComponentName = "Base"
 	PilotComponentName     ComponentName = "Pilot"
-	GalleyComponentName    ComponentName = "Galley"
 	PolicyComponentName    ComponentName = "Policy"
 	TelemetryComponentName ComponentName = "Telemetry"
-	CitadelComponentName   ComponentName = "Citadel"
 
 	CNIComponentName ComponentName = "Cni"
 
@@ -51,80 +73,102 @@ const (
 	// Addon root component
 	AddonComponentName ComponentName = "AddonComponents"
 
-	// Legacy addon components
-	PrometheusComponentName ComponentName = "Prometheus"
-	KialiComponentName      ComponentName = "Kiali"
-	GrafanaComponentName    ComponentName = "Grafana"
-	TracingComponentName    ComponentName = "Tracing"
-	CoreDNSComponentName    ComponentName = "Istiocoredns"
-
 	// Operator components
 	IstioOperatorComponentName      ComponentName = "IstioOperator"
 	IstioOperatorCustomResourceName ComponentName = "IstioOperatorCustomResource"
-
-	// Component names used in old versions
-	InjectorComponentName        ComponentName = "Injector"
-	SidecarInjectorComponentName ComponentName = "SidecarInjector"
-	IngressGatewayComponentName  ComponentName = "IngressGateway"
-	EgressGatewayComponentName   ComponentName = "EgressGateway"
-	NodeAgentComponentName       ComponentName = "NodeAgent"
 )
+
+// ComponentNamesConfig is used for unmarshaling legacy and addon naming data.
+type ComponentNamesConfig struct {
+	DeprecatedComponentNames []string
+}
 
 var (
 	AllCoreComponentNames = []ComponentName{
 		IstioBaseComponentName,
 		PilotComponentName,
-		GalleyComponentName,
 		PolicyComponentName,
 		TelemetryComponentName,
-		CitadelComponentName,
 		CNIComponentName,
 	}
-	DeprecatedNames = []ComponentName{
-		InjectorComponentName,
-		SidecarInjectorComponentName,
-		NodeAgentComponentName,
+	allComponentNamesMap = map[ComponentName]bool{
+		IstioBaseComponentName: true,
+		PilotComponentName:     true,
+		PolicyComponentName:    true,
+		TelemetryComponentName: true,
+		CNIComponentName:       true,
 	}
-	AllLegacyAddonComponentNames = []ComponentName{
-		PrometheusComponentName,
-		KialiComponentName,
-		GrafanaComponentName,
-		TracingComponentName,
-		CoreDNSComponentName,
+
+	// BundledAddonComponentNamesMap is a map of component names of addons which have helm charts bundled with Istio
+	// and have built in path definitions beyond standard addons coming from external charts.
+	BundledAddonComponentNamesMap = make(map[ComponentName]bool)
+
+	// ValuesEnablementPathMap defines a mapping between legacy values enablement paths and the corresponding enablement
+	// paths in IstioOperator.
+	ValuesEnablementPathMap = map[string]string{
+		"spec.values.gateways.istio-ingressgateway.enabled": "spec.components.ingressGateways.[name:istio-ingressgateway].enabled",
+		"spec.values.gateways.istio-egressgateway.enabled":  "spec.components.egressGateways.[name:istio-egressgateway].enabled",
 	}
-	allComponentNamesMap         = make(map[ComponentName]bool)
-	deprecatedComponentNamesMap  = make(map[ComponentName]bool)
-	LegacyAddonComponentNamesMap = make(map[ComponentName]bool)
-	LegacyAddonComponentPathMap  = make(map[string]string)
+
+	// userFacingComponentNames are the names of components that are displayed to the user in high level CLIs
+	// (like progress log).
+	userFacingComponentNames = map[ComponentName]string{
+		IstioBaseComponentName:          "Istio core",
+		PilotComponentName:              "Istiod",
+		PolicyComponentName:             "Policy",
+		TelemetryComponentName:          "Telemetry",
+		CNIComponentName:                "CNI",
+		IngressComponentName:            "Ingress gateways",
+		EgressComponentName:             "Egress gateways",
+		AddonComponentName:              "Addons",
+		IstioOperatorComponentName:      "Istio operator",
+		IstioOperatorCustomResourceName: "Istio operator CRDs",
+	}
+	scanAddons sync.Once
 )
 
-func init() {
-	for _, n := range AllCoreComponentNames {
-		allComponentNamesMap[n] = true
-	}
-	for _, n := range DeprecatedNames {
-		deprecatedComponentNamesMap[n] = true
-	}
-	for _, n := range AllLegacyAddonComponentNames {
-		LegacyAddonComponentNamesMap[n] = true
-		cn := strings.ToLower(string(n))
-		valuePath := fmt.Sprintf("values.%s.enabled", cn)
-		iopPath := fmt.Sprintf("addonComponents.%s.enabled", cn)
-		LegacyAddonComponentPathMap[valuePath] = iopPath
-	}
+// Manifest defines a manifest for a component.
+type Manifest struct {
+	Name    ComponentName
+	Content string
 }
 
 // ManifestMap is a map of ComponentName to its manifest string.
 type ManifestMap map[ComponentName][]string
 
+// Consolidated returns a representation of mm where all manifests in the slice under a key are combined into a single
+// manifest.
+func (mm ManifestMap) Consolidated() map[string]string {
+	out := make(map[string]string)
+	for cname, ms := range mm {
+		allM := ""
+		for _, m := range ms {
+			allM += m + helm.YAMLSeparator
+		}
+		out[string(cname)] = allM
+	}
+	return out
+}
+
+// MergeManifestSlices merges a slice of manifests into a single manifest string.
+func MergeManifestSlices(manifests []string) string {
+	return strings.Join(manifests, helm.YAMLSeparator)
+}
+
+// String implements the Stringer interface.
+func (mm ManifestMap) String() string {
+	out := ""
+	for _, ms := range mm {
+		for _, m := range ms {
+			out += m + helm.YAMLSeparator
+		}
+	}
+	return out
+}
+
 // IsCoreComponent reports whether cn is a core component.
 func (cn ComponentName) IsCoreComponent() bool {
 	return allComponentNamesMap[cn]
-}
-
-// IsDeprecatedName reports whether cn is a deprecated component.
-func (cn ComponentName) IsDeprecatedName() bool {
-	return deprecatedComponentNamesMap[cn]
 }
 
 // IsGateway reports whether cn is a gateway component.
@@ -137,27 +181,6 @@ func (cn ComponentName) IsAddon() bool {
 	return cn == AddonComponentName
 }
 
-// IsLegacyAddonComponent reports whether cn is an legacy addonComponent name.
-func (cn ComponentName) IsLegacyAddonComponent() bool {
-	return LegacyAddonComponentNamesMap[cn]
-}
-
-// NamespaceFromValue gets the namespace value in helm value.yaml tree.
-func NamespaceFromValue(valuePath string, valueSpec map[string]interface{}) (string, error) {
-	nsNodeI, found, err := tpath.GetFromTreePath(valueSpec, util.ToYAMLPath(valuePath))
-	if err != nil {
-		return "", fmt.Errorf("namespace path not found: %s from helm value.yaml tree", valuePath)
-	}
-	if !found || nsNodeI == nil {
-		return "", nil
-	}
-	nsNode, ok := nsNodeI.(string)
-	if !ok {
-		return "", fmt.Errorf("node at helm value.yaml tree path %s has bad type %T, expect string", valuePath, nsNodeI)
-	}
-	return nsNode, nil
-}
-
 // Namespace returns the namespace for the component. It follows these rules:
 // 1. If DefaultNamespace is unset, log and error and return the empty string.
 // 2. If the feature and component namespaces are unset, return DefaultNamespace.
@@ -166,21 +189,8 @@ func NamespaceFromValue(valuePath string, valueSpec map[string]interface{}) (str
 // Namespace assumes that controlPlaneSpec has been validated.
 // TODO: remove extra validations when comfort level is high enough.
 func Namespace(componentName ComponentName, controlPlaneSpec *v1alpha1.IstioOperatorSpec) (string, error) {
-	defaultNamespaceI, found, err := tpath.GetFromStructPath(controlPlaneSpec, "MeshConfig.RootNamespace")
-	if !found {
-		return "", fmt.Errorf("can't find any setting for defaultNamespace for component=%s", componentName)
-	}
-	if err != nil {
-		return "", fmt.Errorf("error in Namepsace for component=%s: %s", componentName, err)
 
-	}
-	defaultNamespace, ok := defaultNamespaceI.(string)
-	if !ok {
-		return "", fmt.Errorf("defaultNamespace has bad type %T, expect string", defaultNamespaceI)
-	}
-	if defaultNamespace == "" {
-		return "", fmt.Errorf("defaultNamespace must be set")
-	}
+	defaultNamespace := iop.Namespace(controlPlaneSpec)
 
 	componentNodeI, found, err := tpath.GetFromStructPath(controlPlaneSpec, "Components."+string(componentName)+".Namespace")
 	if err != nil {
@@ -206,4 +216,44 @@ func Namespace(componentName ComponentName, controlPlaneSpec *v1alpha1.IstioOper
 func TitleCase(n ComponentName) ComponentName {
 	s := string(n)
 	return ComponentName(strings.ToUpper(s[0:1]) + s[1:])
+}
+
+// onceErr is used to report any error returned through once. It must be globally scoped.
+var onceErr error
+
+// ScanBundledAddonComponents scans the specified directory for addons distributed with Istio and dynamically creates
+// a map that can be used to refer to these component names through an API with dynamic values.
+func ScanBundledAddonComponents(chartsRootDir string) error {
+	scanAddons.Do(func() {
+		if chartsRootDir == "" {
+			if onceErr = helm.CheckCompiledInCharts(); onceErr != nil {
+				return
+			}
+		}
+
+		var addonComponentNames []string
+		addonComponentNames, onceErr = helm.GetAddonNamesFromCharts(chartsRootDir, true)
+		if onceErr != nil {
+			onceErr = fmt.Errorf("failed to scan bundled addon components: %v", onceErr)
+			return
+		}
+		for _, an := range addonComponentNames {
+			BundledAddonComponentNamesMap[ComponentName(an)] = true
+			enablementName := strings.ToLower(an[:1]) + an[1:]
+			valuePath := fmt.Sprintf("spec.values.%s.enabled", enablementName)
+			iopPath := fmt.Sprintf("spec.addonComponents.%s.enabled", enablementName)
+			ValuesEnablementPathMap[valuePath] = iopPath
+		}
+	})
+	return onceErr
+}
+
+// UserFacingComponentName returns the name of the given component that should be displayed to the user in high
+// level CLIs (like progress log).
+func UserFacingComponentName(name ComponentName) string {
+	ret, ok := userFacingComponentNames[name]
+	if !ok {
+		return "Unknown"
+	}
+	return ret
 }

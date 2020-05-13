@@ -22,7 +22,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/hashicorp/go-multierror"
 	"k8s.io/api/admissionregistration/v1beta1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/kubernetes"
@@ -65,13 +64,11 @@ func (s *Server) initSidecarInjector(args *PilotArgs) error {
 	parameters := inject.WebhookParameters{
 		ConfigFile: filepath.Join(injectPath, "config"),
 		ValuesFile: filepath.Join(injectPath, "values"),
-		MeshFile:   args.Mesh.ConfigFile,
 		Env:        s.environment,
-		CertFile:   filepath.Join(dnsCertDir, "cert-chain.pem"),
-		KeyFile:    filepath.Join(dnsCertDir, "key.pem"),
 		// Disable monitoring. The injection metrics will be picked up by Pilots metrics exporter already
 		MonitoringPort: -1,
 		Mux:            s.httpsMux,
+		Revision:       args.Revision,
 	}
 
 	wh, err := inject.NewWebhook(parameters)
@@ -83,8 +80,13 @@ func (s *Server) initSidecarInjector(args *PilotArgs) error {
 	// operator or CI/CD
 	if injectionWebhookConfigName.Get() != "" {
 		s.addStartFunc(func(stop <-chan struct{}) error {
-			if err := s.patchCertLoop(s.kubeClient, stop); err != nil {
-				return multierror.Prefix(err, "failed to start patch cert loop")
+			// No leader election - different istiod revisions will patch their own cert.
+			caBundlePath := s.caBundlePath
+			if hasCustomTLSCerts(args.TLSOptions) {
+				caBundlePath = args.TLSOptions.CaCertFile
+			}
+			if err := patchCertLoop(caBundlePath, s.kubeClient, stop); err != nil {
+				log.Errorf("failed to start patch cert loop: %v", err)
 			}
 			return nil
 		})
@@ -103,12 +105,11 @@ const delayedRetryTime = time.Second
 // - pass the existing k8s client
 // - use the K8S root instead of citadel root CA
 // - removed the watcher - the k8s CA is already mounted at startup, no more delay waiting for it
-func (s *Server) patchCertLoop(client kubernetes.Interface, stopCh <-chan struct{}) error {
-
+func patchCertLoop(caBundlePath string, client kubernetes.Interface, stopCh <-chan struct{}) error {
 	// K8S own CA
-	caCertPem, err := ioutil.ReadFile(s.caBundlePath)
+	caCertPem, err := ioutil.ReadFile(caBundlePath)
 	if err != nil {
-		log.Warna("Skipping webhook patch, missing CA path ", s.caBundlePath)
+		log.Warna("Skipping webhook patch, missing CA path ", caBundlePath)
 		return err
 	}
 

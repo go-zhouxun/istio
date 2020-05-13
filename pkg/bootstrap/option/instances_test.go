@@ -48,7 +48,13 @@ func TestOptions(t *testing.T) {
 			testName: "pilotSAN",
 			key:      "pilot_SAN",
 			option:   option.PilotSubjectAltName([]string{"fake"}),
-			expected: []string{"fake"},
+			expected: `[{"exact":"fake"}]`,
+		},
+		{
+			testName: "pilotSAN multi",
+			key:      "pilot_SAN",
+			option:   option.PilotSubjectAltName([]string{"fake", "other"}),
+			expected: `[{"exact":"fake"},{"exact":"other"}]`,
 		},
 		{
 			testName: "mixerSAN",
@@ -125,12 +131,6 @@ func TestOptions(t *testing.T) {
 			key:      "discovery_address",
 			option:   option.DiscoveryAddress("fake"),
 			expected: "fake",
-		},
-		{
-			testName: "dns refresh rate",
-			key:      "dns_refresh_rate",
-			option:   option.DNSRefreshRate("1s"),
-			expected: "1s",
 		},
 		{
 			testName: "localhost v4",
@@ -256,18 +256,6 @@ func TestOptions(t *testing.T) {
 			testName: "lightstep token",
 			key:      "lightstepToken",
 			option:   option.LightstepToken("fake"),
-			expected: "fake",
-		},
-		{
-			testName: "lightstep secure",
-			key:      "lightstepSecure",
-			option:   option.LightstepSecure(true),
-			expected: true,
-		},
-		{
-			testName: "lightstep CA cert path",
-			key:      "lightstepCacertPath",
-			option:   option.LightstepCACertPath("fake"),
 			expected: "fake",
 		},
 		{
@@ -525,8 +513,8 @@ func TestOptions(t *testing.T) {
 		{
 			testName: "envoy metrics tls",
 			key:      "envoy_metrics_service_tls",
-			option: option.EnvoyMetricsServiceTLS(&networkingAPI.TLSSettings{
-				Mode: networkingAPI.TLSSettings_ISTIO_MUTUAL,
+			option: option.EnvoyMetricsServiceTLS(&networkingAPI.ClientTLSSettings{
+				Mode: networkingAPI.ClientTLSSettings_ISTIO_MUTUAL,
 			}, &model.NodeMetadata{}),
 			expected: "{\"common_tls_context\":{\"tls_certificates\":[{\"certificate_chain\":{\"filename\":\"/etc/certs/root-cert.pem\"},\"private_key\":{\"filename\":\"/etc/certs/key.pem\"}}],\"validation_context\":{\"trusted_ca\":{\"filename\":\"/etc/certs/cert-chain.pem\"}},\"alpn_protocols\":[\"istio\",\"h2\"]},\"sni\":\"envoy_metrics_service\"}", // nolint: lll
 		},
@@ -595,8 +583,8 @@ func TestOptions(t *testing.T) {
 		{
 			testName: "envoy access log tls",
 			key:      "envoy_accesslog_service_tls",
-			option: option.EnvoyAccessLogServiceTLS(&networkingAPI.TLSSettings{
-				Mode: networkingAPI.TLSSettings_ISTIO_MUTUAL,
+			option: option.EnvoyAccessLogServiceTLS(&networkingAPI.ClientTLSSettings{
+				Mode: networkingAPI.ClientTLSSettings_ISTIO_MUTUAL,
 			}, &model.NodeMetadata{}),
 			expected: "{\"common_tls_context\":{\"tls_certificates\":[{\"certificate_chain\":{\"filename\":\"/etc/certs/root-cert.pem\"},\"private_key\":{\"filename\":\"/etc/certs/key.pem\"}}],\"validation_context\":{\"trusted_ca\":{\"filename\":\"/etc/certs/cert-chain.pem\"}},\"alpn_protocols\":[\"istio\",\"h2\"]},\"sni\":\"envoy_accesslog_service\"}", // nolint: lll
 		},
@@ -669,34 +657,50 @@ func TestOptions(t *testing.T) {
 			expected: []string{"fake"},
 		},
 		{
-			testName: "sds uds path",
-			key:      "sds_uds_path",
-			option:   option.SDSUDSPath("fake"),
-			expected: "fake",
-		},
-		{
-			testName: "sds token path",
-			key:      "sds_token_path",
-			option:   option.SDSTokenPath("fake"),
-			expected: "fake",
-		},
-		{
 			testName: "pilot_cert_provider kubernetes",
 			key:      "pilot_cert_provider",
 			option:   option.PilotCertProvider("kubernetes"),
 			expected: "kubernetes",
 		},
 		{
-			testName: "pilot_cert_provider citadel",
+			testName: "pilot_cert_provider istiod",
 			key:      "pilot_cert_provider",
-			option:   option.PilotCertProvider("citadel"),
-			expected: "citadel",
+			option:   option.PilotCertProvider("istiod"),
+			expected: "istiod",
 		},
 		{
-			testName: "sts_port",
+			testName: "sts enabled",
+			key:      "sts",
+			option:   option.STSEnabled(true),
+			expected: true,
+		},
+		{
+			testName: "sts port",
 			key:      "sts_port",
-			option:   option.STSPort(555555),
-			expected: 555555,
+			option:   option.STSPort(5555),
+			expected: 5555,
+		},
+		{
+			testName: "project id",
+			key:      "gcp_project_id",
+			option:   option.GCPProjectID("project"),
+			expected: "project",
+		},
+		{
+			testName: "tracing tls nil",
+			key:      "tracing_tls",
+			option:   option.TracingTLS(nil, &model.NodeMetadata{}, false),
+			expected: nil,
+		},
+		{
+			testName: "tracing tls",
+			key:      "tracing_tls",
+			option: option.TracingTLS(&networkingAPI.ClientTLSSettings{
+				Mode:           networkingAPI.ClientTLSSettings_SIMPLE,
+				CaCertificates: "/etc/tracing/ca.pem",
+			}, &model.NodeMetadata{}, false),
+			expected: "{\"name\":\"tls\",\"typed_config\":{\"@type\":\"type.googleapis.com/envoy.api.v2.auth.UpstreamTlsContext\"," +
+				"\"common_tls_context\":{\"validation_context\":{\"trusted_ca\":{\"filename\":\"/etc/tracing/ca.pem\"}}}}}",
 		},
 	}
 

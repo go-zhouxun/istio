@@ -33,6 +33,10 @@ import (
 	"istio.io/pkg/probe"
 )
 
+const (
+	HTTPSHandlerReadyPath = "/httpsReady"
+)
+
 // This is for lint fix
 type httpClient interface {
 	Do(req *http.Request) (*http.Response, error)
@@ -77,7 +81,7 @@ func webhookHTTPSHandlerReady(client httpClient, port uint) error {
 	readinessURL := &url.URL{
 		Scheme: "https",
 		Host:   fmt.Sprintf("localhost:%v", port),
-		Path:   server.HTTPSHandlerReadyPath,
+		Path:   HTTPSHandlerReadyPath,
 	}
 
 	req := &http.Request{
@@ -168,7 +172,11 @@ func NewValidationController(options controller.Options, kubeconfig string) proc
 			if err != nil {
 				return err
 			}
-			c, err := controller.New(options, client)
+			dynamicInterface, err := restConfig.DynamicInterface()
+			if err != nil {
+				return err
+			}
+			c, err := controller.New(options, client, dynamicInterface)
 			if err != nil {
 				return err
 			}

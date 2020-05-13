@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"google.golang.org/grpc"
@@ -111,6 +112,22 @@ type Options struct {
 
 	// JWTPath is the path for the JWT token
 	JWTPath string
+
+	// OutputKeyCertToDir is the directory for output the key and certificate
+	OutputKeyCertToDir string
+
+	// Existing certs, for VM or existing certificates
+	CertsDir string
+
+	// whether  ControlPlaneAuthPolicy is MUTUAL_TLS
+	TLSEnabled bool
+
+	// ClusterID is the cluster ID
+	ClusterID string
+
+	// The type of Elliptical Signature algorithm to use
+	// when generating private keys. Currently only ECDSA is supported.
+	ECCSigAlg string
 }
 
 // Server is the gPRC server that exposes SDS through UDS.
@@ -130,9 +147,9 @@ type Server struct {
 func NewServer(options Options, workloadSecretCache, gatewaySecretCache cache.SecretManager) (*Server, error) {
 	s := &Server{
 		workloadSds: newSDSService(workloadSecretCache, false, options.UseLocalJWT,
-			options.RecycleInterval, options.JWTPath),
+			options.RecycleInterval, options.JWTPath, options.OutputKeyCertToDir),
 		gatewaySds: newSDSService(gatewaySecretCache, true, options.UseLocalJWT,
-			options.RecycleInterval, options.JWTPath),
+			options.RecycleInterval, options.JWTPath, options.OutputKeyCertToDir),
 	}
 	if options.EnableWorkloadSDS {
 		if err := s.initWorkloadSdsService(&options); err != nil {
@@ -325,6 +342,12 @@ func setUpUds(udsPath string) (net.Listener, error) {
 		// Anything other than "file not found" is an error.
 		sdsServiceLog.Errorf("Failed to remove unix://%s: %v", udsPath, err)
 		return nil, fmt.Errorf("failed to remove unix://%s", udsPath)
+	}
+
+	// Attempt to create the folder in case it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(udsPath), 0750); err != nil {
+		// If we cannot create it, just warn here - we will fail later if there is a real error
+		sdsServiceLog.Warnf("Failed to create directory for %v: %v", udsPath, err)
 	}
 
 	var err error

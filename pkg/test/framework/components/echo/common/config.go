@@ -75,6 +75,18 @@ func FillInDefaults(ctx resource.Context, defaultDomain string, c *echo.Config) 
 			portGen.Instance.SetUsed(p.InstancePort)
 		}
 	}
+	for _, p := range c.WorkloadOnlyPorts {
+		if p.Port > 0 {
+			if portGen.Instance.IsUsed(p.Port) {
+				return fmt.Errorf("failed configuring workload only port %d: port already used", p.Port)
+			}
+			portGen.Instance.SetUsed(p.Port)
+			if portGen.Service.IsUsed(p.Port) {
+				return fmt.Errorf("failed configuring workload only port %d: port already used", p.Port)
+			}
+			portGen.Service.SetUsed(p.Port)
+		}
+	}
 
 	// Second pass: try to make unassigned instance ports match service port.
 	for i, p := range c.Ports {

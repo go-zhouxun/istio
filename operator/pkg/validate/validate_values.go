@@ -15,6 +15,10 @@
 package validate
 
 import (
+	"fmt"
+
+	"istio.io/istio/operator/pkg/version"
+
 	"github.com/ghodss/yaml"
 
 	"istio.io/istio/operator/pkg/apis/istio/v1alpha1"
@@ -22,17 +26,18 @@ import (
 )
 
 var (
-	// defaultValidations maps a data path to a validation function.
-	defaultValuesValidations = map[string]ValidatorFunc{
+	// DefaultValuesValidations maps a data path to a validation function.
+	DefaultValuesValidations = map[string]ValidatorFunc{
 		"global.proxy.includeIPRanges":     validateIPRangesOrStar,
 		"global.proxy.excludeIPRanges":     validateIPRangesOrStar,
 		"global.proxy.includeInboundPorts": validateStringList(validatePortNumberString),
 		"global.proxy.excludeInboundPorts": validateStringList(validatePortNumberString),
+		"meshConfig":                       validateMeshConfig,
 	}
 )
 
 // CheckValues validates the values in the given tree, which follows the Istio values.yaml schema.
-func CheckValues(root map[string]interface{}) util.Errors {
+func CheckValues(root interface{}) util.Errors {
 	vs, err := yaml.Marshal(root)
 	if err != nil {
 		return util.Errors{err}
@@ -41,13 +46,26 @@ func CheckValues(root map[string]interface{}) util.Errors {
 	if err := util.UnmarshalValuesWithJSONPB(string(vs), val, false); err != nil {
 		return util.Errors{err}
 	}
-	return validateValues(root, nil)
+	return ValuesValidate(DefaultValuesValidations, root, nil)
 }
 
-func validateValues(node interface{}, path util.Path) (errs util.Errors) {
+// CheckValues validates the values in the given tree string, which follows the Istio values.yaml schema.
+func CheckValuesString(vs []byte) util.Errors {
+	var yamlTree = make(map[string]interface{})
+	err := yaml.Unmarshal(vs, &yamlTree)
+	if err != nil {
+		return util.Errors{fmt.Errorf("values.yaml string failed validation: %v", err)}
+	}
+	return CheckValues(yamlTree)
+}
+
+// ValuesValidate function below is used by third party for integrations and has to be public
+
+// ValuesValidate validates the values of the tree using the supplied Func
+func ValuesValidate(validations map[string]ValidatorFunc, node interface{}, path util.Path) (errs util.Errors) {
 	pstr := path.String()
-	scope.Debugf("validateValues %s", pstr)
-	vf := defaultValuesValidations[pstr]
+	scope.Debugf("ValuesValidate %s", pstr)
+	vf := validations[pstr]
 	if vf != nil {
 		errs = util.AppendErrs(errs, vf(path, node))
 	}
@@ -58,8 +76,16 @@ func validateValues(node interface{}, path util.Path) (errs util.Errors) {
 		return errs
 	}
 	for k, v := range nn {
-		errs = util.AppendErrs(errs, validateValues(v, append(path, k)))
+		errs = util.AppendErrs(errs, ValuesValidate(validations, v, append(path, k)))
 	}
 
 	return errs
+}
+
+// GenValidateError generates error with helpful message when input fails values.yaml schema validation
+func GenValidateError(mvs version.MinorVersion, err error) error {
+	vs := fmt.Sprintf("release-%s.%d", mvs.MajorVersion, mvs.Minor)
+	return fmt.Errorf("the input values.yaml fail validation: %v\n"+
+		"check against https://github.com/istio/istio/blob/%s/operator/pkg/apis/istio/v1alpha1/values_types.proto for schema\n"+
+		"or run the command with --force flag to ignore the error", err, vs)
 }

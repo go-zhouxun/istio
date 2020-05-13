@@ -30,13 +30,12 @@ import (
 	"istio.io/istio/pkg/test"
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/echo"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/components/galley"
 	"istio.io/istio/pkg/test/framework/components/istio"
 	"istio.io/istio/pkg/test/framework/components/namespace"
 	"istio.io/istio/pkg/test/framework/components/pilot"
 	"istio.io/istio/pkg/test/framework/label"
 	"istio.io/istio/pkg/test/framework/resource"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/pkg/test/util/retry"
 	"istio.io/istio/pkg/test/util/structpath"
 )
@@ -164,7 +163,6 @@ var (
 
 	ist istio.Instance
 	p   pilot.Instance
-	g   galley.Instance
 	r   *rand.Rand
 )
 
@@ -190,13 +188,11 @@ func init() {
 
 func TestMain(m *testing.M) {
 	framework.NewSuite("locality_prioritized_failover_loadbalancing", m).
+		RequireSingleCluster().
 		Label(label.CustomSetup).
 		SetupOnEnv(environment.Kube, istio.Setup(&ist, nil)).
 		Setup(func(ctx resource.Context) (err error) {
-			if g, err = galley.New(ctx, galley.Config{}); err != nil {
-				return err
-			}
-			if p, err = pilot.New(ctx, pilot.Config{Galley: g}); err != nil {
+			if p, err = pilot.New(ctx, pilot.Config{}); err != nil {
 				return err
 			}
 			r = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -210,6 +206,7 @@ func echoConfig(ns namespace.Instance, name string) echo.Config {
 		Service:   name,
 		Namespace: ns,
 		Locality:  "region.zone.subzone",
+		Subsets:   []echo.SubsetConfig{{}},
 		Ports: []echo.Port{
 			{
 				Name:        "http",
@@ -219,8 +216,7 @@ func echoConfig(ns namespace.Instance, name string) echo.Config {
 				InstancePort: 8090,
 			},
 		},
-		Galley: g,
-		Pilot:  p,
+		Pilot: p,
 	}
 }
 
@@ -237,18 +233,18 @@ type serviceConfig struct {
 	NonExistantServiceLocality string
 }
 
-func deploy(t test.Failer, ns namespace.Instance, se serviceConfig, from echo.Instance, tmpl *template.Template) {
+func deploy(t test.Failer, ctx resource.Context, ns namespace.Instance, se serviceConfig, from echo.Instance, tmpl *template.Template) {
 	t.Helper()
 	var buf bytes.Buffer
 	if err := deploymentTemplate.Execute(&buf, se); err != nil {
 		t.Fatal(err)
 	}
-	g.ApplyConfigOrFail(t, ns, buf.String())
+	ctx.ApplyConfigOrFail(t, ns.Name(), buf.String())
 	buf.Reset()
 	if err := tmpl.Execute(&buf, se); err != nil {
 		t.Fatal(err)
 	}
-	g.ApplyConfigOrFail(t, ns, buf.String())
+	ctx.ApplyConfigOrFail(t, ns.Name(), buf.String())
 
 	err := WaitUntilRoute(from, se.Host)
 	if err != nil {

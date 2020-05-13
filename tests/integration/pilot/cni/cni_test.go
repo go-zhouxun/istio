@@ -19,18 +19,19 @@ import (
 
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/echo"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/components/galley"
+	"istio.io/istio/pkg/test/framework/components/environment/kube"
 	"istio.io/istio/pkg/test/framework/components/istio"
 	"istio.io/istio/pkg/test/framework/components/namespace"
 	"istio.io/istio/pkg/test/framework/components/pilot"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/tests/integration/security/util/reachability"
 )
 
 func TestMain(m *testing.M) {
 	framework.
 		NewSuite("cni", m).
-		Skip("https://github.com/istio/istio/issues/20487").
+		RequireEnvironment(environment.Kube).
+		RequireSingleCluster().
 		SetupOnEnv(environment.Kube, istio.Setup(nil, func(cfg *istio.Config) {
 			cfg.ControlPlaneValues = `
 components:
@@ -38,6 +39,7 @@ components:
      enabled: true
      hub: gcr.io/istio-testing
      tag: latest
+     namespace: kube-system
 `
 		})).
 		Run()
@@ -52,17 +54,13 @@ components:
 func TestCNIReachability(t *testing.T) {
 	framework.NewTest(t).
 		Run(func(ctx framework.TestContext) {
-			g, err := galley.New(ctx, galley.Config{})
+			kenv := ctx.Environment().(*kube.Environment)
+			cluster := kenv.KubeClusters[0]
+			_, err := cluster.WaitUntilPodsAreReady(cluster.NewSinglePodFetch("kube-system", "k8s-app=istio-cni-node"))
 			if err != nil {
 				ctx.Fatal(err)
 			}
-			p, err := pilot.New(ctx, pilot.Config{
-				Galley: g,
-			})
-			if err != nil {
-				ctx.Fatal(err)
-			}
-			rctx := reachability.CreateContext(ctx, g, p)
+			rctx := reachability.CreateContext(ctx, pilot.NewOrFail(t, ctx, pilot.Config{}))
 			systemNM := namespace.ClaimSystemNamespaceOrFail(ctx, ctx)
 
 			testCases := []reachability.TestCase{

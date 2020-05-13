@@ -23,8 +23,6 @@ import (
 	"sort"
 	"strings"
 
-	"istio.io/istio/operator/pkg/manifest"
-
 	"github.com/google/go-cmp/cmp"
 	"sigs.k8s.io/yaml"
 
@@ -186,8 +184,8 @@ func genYamlIgnoreOpt(yamlStr string) (cmp.Option, error) {
 	}
 	return cmp.FilterPath(func(curPath cmp.Path) bool {
 		up := pathToStringList(curPath)
-		treeNode, found, _ := tpath.GetFromTreePath(tree, up)
-		return found && tpath.IsLeafNode(treeNode)
+		treeNode, found, _ := tpath.Find(tree, up)
+		return found && IsLeafNode(treeNode)
 	}, cmp.Ignore()), nil
 }
 
@@ -210,7 +208,13 @@ func pathToStringList(path cmp.Path) (up []string) {
 		case cmp.MapIndex:
 			up = append(up, fmt.Sprintf("%v", t.Key()))
 		case cmp.SliceIndex:
-			up = append(up, fmt.Sprintf("%v", t.String()))
+			// Create an element, but never an NPath
+			s := t.String()
+			if util.IsNPathElement(s) {
+				// Convert e.g. [0] to [#0]
+				s = fmt.Sprintf("%c%c%s", s[0], '#', s[1:])
+			}
+			up = append(up, s)
 		}
 	}
 	return
@@ -268,11 +272,11 @@ func ManifestDiffWithRenameSelectIgnore(a, b, renameResources, selectResources, 
 	return manifestDiff(aosm, bosm, im, verbose)
 }
 
-// SelectAndIgnoreFromOutput selects and ignores subset from the manifest string
-func SelectAndIgnoreFromOutput(ms string, selectResources string, ignoreResources string) (string, error) {
+// FilterManifest selects and ignores subset from the manifest string
+func FilterManifest(ms string, selectResources string, ignoreResources string) (string, error) {
 	sm := getObjPathMap(selectResources)
 	im := getObjPathMap(ignoreResources)
-	ao, err := object.ParseK8sObjectsFromYAMLManifest(ms)
+	ao, err := object.ParseK8sObjectsFromYAMLManifestFailOption(ms, false)
 	if err != nil {
 		return "", err
 	}
@@ -293,7 +297,7 @@ func SelectAndIgnoreFromOutput(ms string, selectResources string, ignoreResource
 	if err != nil {
 		return "", err
 	}
-	k8sObjects.Sort(manifest.DefaultObjectOrder())
+	k8sObjects.Sort(object.DefaultObjectOrder())
 	sortdManifests, err := k8sObjects.YAMLManifest()
 	if err != nil {
 		return "", err
@@ -492,4 +496,9 @@ func writeStringSafe(sb io.StringWriter, s string) {
 	if err != nil {
 		log.Error(err.Error())
 	}
+}
+
+// IsLeafNode reports whether the given node is a leaf, assuming internal nodes can only be maps or slices.
+func IsLeafNode(node interface{}) bool {
+	return !util.IsMap(node) && !util.IsSlice(node)
 }

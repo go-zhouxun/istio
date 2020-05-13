@@ -1,12 +1,24 @@
-# Base component is disabled.
+# AddonComponents grafana component is disabled.
 
-# Citadel component is disabled.
+---
+# AddonComponents istiocoredns component is disabled.
+
+---
+# AddonComponents kiali component is disabled.
+
+---
+# AddonComponents prometheus component is disabled.
+
+---
+# AddonComponents istio-tracing component is disabled.
+
+# Base component is disabled.
 
 # Cni component is disabled.
 
-# Galley component is disabled.
+# EgressGateways istio-egressgateway component is disabled.
 
-# Pilot component is disabled.
+# Pilot istiod component is disabled.
 
 # Policy component is disabled.
 

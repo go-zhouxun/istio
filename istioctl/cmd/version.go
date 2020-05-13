@@ -22,6 +22,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"istio.io/istio/istioctl/pkg/clioptions"
+	"istio.io/istio/operator/cmd/mesh"
 	v2 "istio.io/istio/pilot/pkg/proxy/envoy/v2"
 
 	istioVersion "istio.io/pkg/version"
@@ -34,29 +36,33 @@ type sidecarSyncStatus struct {
 }
 
 func newVersionCommand() *cobra.Command {
+	profileCmd := mesh.ProfileCmd()
+	var opts clioptions.ControlPlaneOptions
 	versionCmd := istioVersion.CobraCommandWithOptions(istioVersion.CobraOptions{
-		GetRemoteVersion: getRemoteInfo,
-		GetProxyVersions: getProxyInfo,
+		GetRemoteVersion: getRemoteInfoWrapper(&profileCmd, &opts),
+		GetProxyVersions: getProxyInfoWrapper(&opts),
 	})
+	opts.AttachControlPlaneFlags(versionCmd)
+
 	versionCmd.Flags().VisitAll(func(flag *pflag.Flag) {
 		if flag.Name == "short" {
 			err := flag.Value.Set("true")
 			if err != nil {
-				fmt.Fprint(os.Stdout, fmt.Sprintf("set flag %q as true failed due to error %v", flag.Name, err))
+				fmt.Fprintf(os.Stdout, "set flag %q as true failed due to error %v", flag.Name, err)
 			}
 		}
 		if flag.Name == "remote" {
 			err := flag.Value.Set("true")
 			if err != nil {
-				fmt.Fprint(os.Stdout, fmt.Sprintf("set flag %q as true failed due to error %v", flag.Name, err))
+				fmt.Fprintf(os.Stdout, "set flag %q as true failed due to error %v", flag.Name, err)
 			}
 		}
 	})
 	return versionCmd
 }
 
-func getRemoteInfo() (*istioVersion.MeshInfo, error) {
-	kubeClient, err := clientExecFactory(kubeconfig, configContext)
+func getRemoteInfo(opts clioptions.ControlPlaneOptions) (*istioVersion.MeshInfo, error) {
+	kubeClient, err := clientExecFactory(kubeconfig, configContext, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -64,14 +70,35 @@ func getRemoteInfo() (*istioVersion.MeshInfo, error) {
 	return kubeClient.GetIstioVersions(istioNamespace)
 }
 
-func getProxyInfo() (*[]istioVersion.ProxyInfo, error) {
-	kubeClient, err := clientExecFactory(kubeconfig, configContext)
+func getRemoteInfoWrapper(pc **cobra.Command, opts *clioptions.ControlPlaneOptions) func() (*istioVersion.MeshInfo, error) {
+	return func() (*istioVersion.MeshInfo, error) {
+		remInfo, err := getRemoteInfo(*opts)
+		if err != nil {
+			fmt.Fprintf((*pc).OutOrStdout(), "%v\n", err)
+			// Return nil so that the client version is printed
+			return nil, nil
+		}
+		if remInfo == nil {
+			fmt.Fprintf((*pc).OutOrStdout(), "Istio is not present in the cluster with namespace %q\n", istioNamespace)
+		}
+		return remInfo, err
+	}
+}
+
+func getProxyInfoWrapper(opts *clioptions.ControlPlaneOptions) func() (*[]istioVersion.ProxyInfo, error) {
+	return func() (*[]istioVersion.ProxyInfo, error) {
+		return getProxyInfo(opts)
+	}
+}
+
+func getProxyInfo(opts *clioptions.ControlPlaneOptions) (*[]istioVersion.ProxyInfo, error) {
+	kubeClient, err := clientExecFactory(kubeconfig, configContext, *opts)
 	if err != nil {
 		return nil, err
 	}
 
 	// Ask Pilot for the Envoy sidecar sync status, which includes the sidecar version info
-	allSyncz, err := kubeClient.AllPilotsDiscoveryDo(istioNamespace, "GET", "/debug/syncz", nil)
+	allSyncz, err := kubeClient.AllPilotsDiscoveryDo(istioNamespace, "/debug/syncz")
 	if err != nil {
 		return nil, err
 	}

@@ -18,37 +18,16 @@ import (
 	"fmt"
 
 	"istio.io/api/operator/v1alpha1"
+
 	"istio.io/istio/operator/pkg/name"
 	"istio.io/istio/operator/pkg/tpath"
 	"istio.io/istio/operator/pkg/util"
-	binversion "istio.io/istio/operator/version"
 )
 
 // IsComponentEnabledInSpec reports whether the given component is enabled in the given spec.
 // IsComponentEnabledInSpec assumes that controlPlaneSpec has been validated.
 // TODO: remove extra validations when comfort level is high enough.
 func IsComponentEnabledInSpec(componentName name.ComponentName, controlPlaneSpec *v1alpha1.IstioOperatorSpec) (bool, error) {
-	// for Istio components, check whether override path exist in values part first then ISCP.
-	enabled, pathExist, err := IsComponentEnabledFromValue(componentName, controlPlaneSpec.Values)
-	// only return value when path exists
-	if err == nil && pathExist {
-		return enabled, nil
-	}
-	if componentName == name.IngressComponentName {
-		return len(controlPlaneSpec.Components.IngressGateways) != 0, nil
-	}
-	if componentName == name.EgressComponentName {
-		return len(controlPlaneSpec.Components.EgressGateways) != 0, nil
-	}
-	if componentName == name.AddonComponentName {
-		for _, ac := range controlPlaneSpec.AddonComponents {
-			if ac.Enabled != nil && ac.Enabled.Value {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-
 	componentNodeI, found, err := tpath.GetFromStructPath(controlPlaneSpec, "Components."+string(componentName)+".Enabled")
 	if err != nil {
 		return false, fmt.Errorf("error in IsComponentEnabledInSpec GetFromStructPath componentEnabled for component=%s: %s",
@@ -70,23 +49,20 @@ func IsComponentEnabledInSpec(componentName name.ComponentName, controlPlaneSpec
 // IsComponentEnabledFromValue get whether component is enabled in helm value.yaml tree.
 // valuePath points to component path in the values tree.
 func IsComponentEnabledFromValue(cn name.ComponentName, valueSpec map[string]interface{}) (enabled bool, pathExist bool, err error) {
-	t, err := NewTranslator(binversion.OperatorBinaryVersion.MinorVersion)
-	if err != nil {
-		return false, false, err
-	}
+	t := NewTranslator()
 	cnMap, ok := t.ComponentMaps[cn]
 	if !ok {
 		return false, false, nil
 	}
 	valuePath := cnMap.ToHelmValuesTreeRoot
 	enabledPath := valuePath + ".enabled"
-	enableNodeI, found, err := tpath.GetFromTreePath(valueSpec, util.ToYAMLPath(enabledPath))
+	enableNodeI, found, err := tpath.Find(valueSpec, util.ToYAMLPath(enabledPath))
 	if err != nil {
 		return false, false, fmt.Errorf("error finding component enablement path: %s in helm value.yaml tree", enabledPath)
 	}
 	if !found {
 		// Some components do not specify enablement should be treated as enabled if the root node in the component subtree exists.
-		_, found, err := tpath.GetFromTreePath(valueSpec, util.ToYAMLPath(valuePath))
+		_, found, err := tpath.Find(valueSpec, util.ToYAMLPath(valuePath))
 		if err != nil {
 			return false, false, err
 		}
@@ -100,4 +76,15 @@ func IsComponentEnabledFromValue(cn name.ComponentName, valueSpec map[string]int
 		return false, true, fmt.Errorf("node at valuePath %s has bad type %T, expect bool", enabledPath, enableNodeI)
 	}
 	return enableNode, true, nil
+}
+
+// OverlayValuesEnablement overlays any enablement in values path from the user file overlay or set flag overlay.
+// The overlay is translated from values to the corresponding addonComponents enablement paths.
+func OverlayValuesEnablement(baseYAML, fileOverlayYAML, setOverlayYAML string) (string, error) {
+	overlayYAML, err := util.OverlayYAML(fileOverlayYAML, setOverlayYAML)
+	if err != nil {
+		return "", fmt.Errorf("could not overlay user config over base: %s", err)
+	}
+
+	return YAMLTree(overlayYAML, baseYAML, name.ValuesEnablementPathMap)
 }

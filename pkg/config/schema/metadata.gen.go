@@ -75,16 +75,6 @@ var _metadataYaml = []byte(`# Copyright 2019 Istio Authors
 # The total set of collections, both Istio (i.e. MCP) and K8s (API Server/K8s).
 collections:
   ## Istio collections
-  - name: "istio/authentication/v1alpha1/meshpolicies"
-    kind: "MeshPolicy"
-    group: "authentication.istio.io"
-    pilot: true
-
-  - name: "istio/authentication/v1alpha1/policies"
-    kind: "Policy"
-    group: "authentication.istio.io"
-    pilot: true
-
   - name: "istio/config/v1alpha2/adapters"
     kind: "adapter"
     group: "config.istio.io"
@@ -105,6 +95,10 @@ collections:
 
   - name: "istio/mesh/v1alpha1/MeshConfig"
     kind: "MeshConfig"
+    group: ""
+
+  - name: "istio/mesh/v1alpha1/MeshNetworks"
+    kind: "MeshNetworks"
     group: ""
 
   - name: "istio/mixer/v1/config/client/quotaspecs"
@@ -137,9 +131,10 @@ collections:
     group: "networking.istio.io"
     pilot: true
 
-  - name: "istio/networking/v1alpha3/synthetic/serviceentries"
-    kind: "ServiceEntry"
+  - name: "istio/networking/v1alpha3/workloadentries"
+    kind: "WorkloadEntry"
     group: "networking.istio.io"
+    pilot: true
 
   - name: "istio/networking/v1alpha3/sidecars"
     kind: "Sidecar"
@@ -205,6 +200,10 @@ collections:
   ### K8s collections ###
 
   # Built-in K8s collections
+  - name: "k8s/apiextensions.k8s.io/v1beta1/customresourcedefinitions"
+    kind: "CustomResourceDefinition"
+    group: "apiextensions.k8s.io"
+
   - name: "k8s/apps/v1/deployments"
     kind: "Deployment"
     group: "apps"
@@ -233,18 +232,35 @@ collections:
     kind: "Service"
     group: ""
 
+  - name: "k8s/core/v1/configmaps"
+    kind: "ConfigMap"
+    group: ""
+
   - name: "k8s/extensions/v1beta1/ingresses"
     kind: "Ingress"
     group: "extensions"
 
-  # Istio CRD collections
-  - name: "k8s/authentication.istio.io/v1alpha1/meshpolicies"
-    kind: "MeshPolicy"
-    group: "authentication.istio.io"
+  - kind: "GatewayClass"
+    name: "k8s/service_apis/v1alpha1/gatewayclasses"
+    group: "networking.x.k8s.io"
 
-  - name: "k8s/authentication.istio.io/v1alpha1/policies"
-    kind: "Policy"
-    group: "authentication.istio.io"
+  - kind: "Gateway"
+    name: "k8s/service_apis/v1alpha1/gateways"
+    group: "networking.x.k8s.io"
+
+  - kind: "HTTPRoute"
+    name: "k8s/service_apis/v1alpha1/httproutes"
+    group: "networking.x.k8s.io"
+
+  - kind: "TcpRoute"
+    name: "k8s/service_apis/v1alpha1/tcproutes"
+    group: "networking.x.k8s.io"
+
+  - kind: "TrafficSplit"
+    name: "k8s/service_apis/v1alpha1/trafficsplits"
+    group: "networking.x.k8s.io"
+
+  # Istio CRD collections
 
   - name: "k8s/config.istio.io/v1alpha2/adapters"
     kind: "adapter"
@@ -298,6 +314,10 @@ collections:
     kind: "ServiceEntry"
     group: "networking.istio.io"
 
+  - name: "k8s/networking.istio.io/v1alpha3/workloadentries"
+    kind: "WorkloadEntry"
+    group: "networking.istio.io"
+
   - name: "k8s/networking.istio.io/v1alpha3/sidecars"
     kind: "Sidecar"
     group: "networking.istio.io"
@@ -344,8 +364,6 @@ snapshots:
   - name: "default"
     strategy: debounce
     collections:
-      - "istio/authentication/v1alpha1/meshpolicies"
-      - "istio/authentication/v1alpha1/policies"
       - "istio/config/v1alpha2/adapters"
       - "istio/config/v1alpha2/httpapispecs"
       - "istio/config/v1alpha2/httpapispecbindings"
@@ -357,6 +375,7 @@ snapshots:
       - "istio/networking/v1alpha3/envoyfilters"
       - "istio/networking/v1alpha3/gateways"
       - "istio/networking/v1alpha3/serviceentries"
+      - "istio/networking/v1alpha3/workloadentries"
       - "istio/networking/v1alpha3/sidecars"
       - "istio/networking/v1alpha3/virtualservices"
       - "istio/policy/v1beta1/attributemanifests"
@@ -373,37 +392,38 @@ snapshots:
       - "k8s/core/v1/namespaces"
       - "k8s/core/v1/services"
 
-    # Used by Galley to perform service discovery
-  - name: "syntheticServiceEntry"
-    strategy: immediate
-    collections:
-      - "istio/networking/v1alpha3/synthetic/serviceentries"
-
     # Used by istioctl to perform analysis
   - name: "localAnalysis"
     strategy: immediate
     collections:
-      - "istio/authentication/v1alpha1/meshpolicies"
-      - "istio/authentication/v1alpha1/policies"
       - "istio/rbac/v1alpha1/servicerolebindings"
       - "istio/rbac/v1alpha1/serviceroles"
       - "istio/mesh/v1alpha1/MeshConfig"
+      - "istio/mesh/v1alpha1/MeshNetworks"
       - "istio/networking/v1alpha3/envoyfilters"
       - "istio/networking/v1alpha3/destinationrules"
       - "istio/networking/v1alpha3/gateways"
       - "istio/networking/v1alpha3/serviceentries"
       - "istio/networking/v1alpha3/sidecars"
       - "istio/networking/v1alpha3/virtualservices"
-      - "istio/networking/v1alpha3/synthetic/serviceentries"
+      - "k8s/apiextensions.k8s.io/v1beta1/customresourcedefinitions"
       - "k8s/apps/v1/deployments"
       - "k8s/core/v1/namespaces"
       - "k8s/core/v1/pods"
       - "k8s/core/v1/secrets"
       - "k8s/core/v1/services"
+      - "k8s/core/v1/configmaps"
 
 # Configuration for resource types.
 resources:
   # Kubernetes specific configuration.
+  - kind: "CustomResourceDefinition"
+    plural: "CustomResourceDefinitions"
+    group: "apiextensions.k8s.io"
+    version: "v1beta1"
+    proto: "k8s.io.apiextensions_apiserver.pkg.apis.apiextensions.v1beta1.CustomResourceDefinition"
+    protoPackage: "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
+
   - kind: "Deployment"
     plural: "Deployments"
     group: "apps"
@@ -449,12 +469,54 @@ resources:
     proto: "k8s.io.api.core.v1.ServiceSpec"
     protoPackage: "k8s.io/api/core/v1"
 
+  - kind: "ConfigMap"
+    plural: "configmaps"
+    version: "v1"
+    proto: "k8s.io.api.core.v1.ConfigMap"
+    protoPackage: "k8s.io/api/core/v1"
+
   - kind: "Ingress"
     plural: "ingresses"
     group: "extensions"
     version: "v1beta1"
     proto: "k8s.io.api.extensions.v1beta1.IngressSpec"
     protoPackage: "k8s.io/api/extensions/v1beta1"
+
+  - Kind: "GatewayClass"
+    plural: "gatewayclasses"
+    group: "networking.x.k8s.io"
+    version: "v1alpha1"
+    clusterScoped: true
+    protoPackage: "sigs.k8s.io/service-apis/api/v1alpha1"
+    proto: "k8s.io.service_apis.api.v1alpha1.GatewayClassSpec"
+
+  - Kind: "Gateway"
+    plural: "gateways"
+    group: "networking.x.k8s.io"
+    version: "v1alpha1"
+    protoPackage: "sigs.k8s.io/service-apis/api/v1alpha1"
+    proto: "k8s.io.service_apis.api.v1alpha1.GatewaySpec"
+
+  - Kind: "HTTPRoute"
+    plural: "httproutes"
+    group: "networking.x.k8s.io"
+    version: "v1alpha1"
+    protoPackage: "sigs.k8s.io/service-apis/api/v1alpha1"
+    proto: "k8s.io.service_apis.api.v1alpha1.HTTPRouteSpec"
+
+  - Kind: "TcpRoute"
+    plural: "tcproutes"
+    group: "networking.x.k8s.io"
+    version: "v1alpha1"
+    protoPackage: "sigs.k8s.io/service-apis/api/v1alpha1"
+    proto: "k8s.io.service_apis.api.v1alpha1.TcpRouteSpec"
+
+  - Kind: "TrafficSplit"
+    plural: "trafficsplits"
+    group: "networking.x.k8s.io"
+    version: "v1alpha1"
+    protoPackage: "sigs.k8s.io/service-apis/api/v1alpha1"
+    proto: "k8s.io.service_apis.api.v1alpha1.TrafficSplitSpec"
 
   ## Istio resources
   - kind: "VirtualService"
@@ -480,6 +542,14 @@ resources:
     proto: "istio.networking.v1alpha3.ServiceEntry"
     protoPackage: "istio.io/api/networking/v1alpha3"
     description: "describes service entries"
+
+  - kind: "WorkloadEntry"
+    plural: "workloadentries"
+    group: "networking.istio.io"
+    version: "v1alpha3"
+    proto: "istio.networking.v1alpha3.WorkloadEntry"
+    protoPackage: "istio.io/api/networking/v1alpha3"
+    description: "describes workload entries"
 
   - kind: "DestinationRule"
     plural: "destinationrules"
@@ -537,25 +607,6 @@ resources:
     protoPackage: "istio.io/api/mixer/v1/config/client"
     description: "describes an Quota specification binding"
 
-  - kind: "Policy"
-    plural: "policies"
-    group: "authentication.istio.io"
-    version: "v1alpha1"
-    proto: "istio.authentication.v1alpha1.Policy"
-    protoPackage: "istio.io/api/authentication/v1alpha1"
-    validate: "ValidateAuthenticationPolicy"
-    description: "describes an authentication policy"
-
-  - kind: "MeshPolicy"
-    plural: "meshpolicies"
-    group: "authentication.istio.io"
-    version: "v1alpha1"
-    clusterScoped: true
-    proto: "istio.authentication.v1alpha1.Policy"
-    protoPackage: "istio.io/api/authentication/v1alpha1"
-    validate: "ValidateAuthenticationPolicy"
-    description: "describes an authentication policy at mesh level."
-
   - kind: "MeshConfig"
     plural: "meshconfigs"
     group: ""
@@ -563,6 +614,14 @@ resources:
     proto: "istio.mesh.v1alpha1.MeshConfig"
     protoPackage: "istio.io/api/mesh/v1alpha1"
     description: "describes the configuration for the Istio mesh."
+
+  - kind: "MeshNetworks"
+    plural: "meshnetworks"
+    group: ""
+    version: "v1alpha1"
+    proto: "istio.mesh.v1alpha1.MeshNetworks"
+    protoPackage: "istio.io/api/mesh/v1alpha1"
+    description: "describes the networks for the Istio mesh."
 
   - kind: "ServiceRole"
     plural: "serviceroles"
@@ -587,8 +646,8 @@ resources:
     proto: "istio.rbac.v1alpha1.RbacConfig"
     protoPackage: "istio.io/api/rbac/v1alpha1"
     description: "describes the mesh level RBAC config.\n
-                   Deprecated: use ClusterRbacConfig instead.\n
-                   See https://github.com/istio/istio/issues/8825 for more details."
+      Deprecated: use ClusterRbacConfig instead.\n
+      See https://github.com/istio/istio/issues/8825 for more details."
 
   - kind: "ClusterRbacConfig"
     plural: "clusterrbacconfigs"
@@ -670,6 +729,7 @@ resources:
 transforms:
   - type: direct
     mapping:
+      "k8s/apiextensions.k8s.io/v1beta1/customresourcedefinitions": "k8s/apiextensions.k8s.io/v1beta1/customresourcedefinitions"
       "k8s/config.istio.io/v1alpha2/adapters": "istio/config/v1alpha2/adapters"
       "k8s/config.istio.io/v1alpha2/attributemanifests": "istio/policy/v1beta1/attributemanifests"
       "k8s/config.istio.io/v1alpha2/handlers": "istio/policy/v1beta1/handlers"
@@ -684,6 +744,7 @@ transforms:
       "k8s/networking.istio.io/v1alpha3/envoyfilters": "istio/networking/v1alpha3/envoyfilters"
       "k8s/networking.istio.io/v1alpha3/gateways": "istio/networking/v1alpha3/gateways"
       "k8s/networking.istio.io/v1alpha3/serviceentries": "istio/networking/v1alpha3/serviceentries"
+      "k8s/networking.istio.io/v1alpha3/workloadentries": "istio/networking/v1alpha3/workloadentries"
       "k8s/networking.istio.io/v1alpha3/sidecars": "istio/networking/v1alpha3/sidecars"
       "k8s/networking.istio.io/v1alpha3/virtualservices": "istio/networking/v1alpha3/virtualservices"
       "k8s/rbac.istio.io/v1alpha1/policy": "istio/rbac/v1alpha1/servicerolebindings"
@@ -698,7 +759,9 @@ transforms:
       "k8s/core/v1/pods": "k8s/core/v1/pods"
       "k8s/core/v1/secrets": "k8s/core/v1/secrets"
       "k8s/core/v1/services": "k8s/core/v1/services"
+      "k8s/core/v1/configmaps": "k8s/core/v1/configmaps"
       "istio/mesh/v1alpha1/MeshConfig": "istio/mesh/v1alpha1/MeshConfig"
+      "istio/mesh/v1alpha1/MeshNetworks": "istio/mesh/v1alpha1/MeshNetworks"
 `)
 
 func metadataYamlBytes() ([]byte, error) {

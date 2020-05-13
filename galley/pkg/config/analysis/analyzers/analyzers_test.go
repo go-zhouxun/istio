@@ -33,6 +33,7 @@ import (
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/deprecation"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/gateway"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/injection"
+	"istio.io/istio/galley/pkg/config/analysis/analyzers/multicluster"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/service"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/sidecar"
 	"istio.io/istio/galley/pkg/config/analysis/analyzers/virtualservice"
@@ -51,11 +52,12 @@ type message struct {
 }
 
 type testCase struct {
-	name           string
-	inputFiles     []string
-	meshConfigFile string // Optional
-	analyzer       analysis.Analyzer
-	expected       []message
+	name             string
+	inputFiles       []string
+	meshConfigFile   string // Optional
+	meshNetworksFile string // Optional
+	analyzer         analysis.Analyzer
+	expected         []message
 }
 
 // Some notes on setting up tests for Analyzers:
@@ -73,99 +75,10 @@ var testGrid = []testCase{
 		expected: []message{
 			{msg.UnknownAnnotation, "Service httpbin"},
 			{msg.MisplacedAnnotation, "Service details"},
+			{msg.InvalidAnnotation, "Pod invalid-annotations"},
 			{msg.MisplacedAnnotation, "Pod grafana-test"},
 			{msg.MisplacedAnnotation, "Deployment fortio-deploy"},
 			{msg.MisplacedAnnotation, "Namespace staging"},
-		},
-	},
-	{
-		name:           "mtlsAnalyzerAutoMtlsSkips",
-		inputFiles:     []string{"testdata/mtls-global-dr-no-meshpolicy.yaml"},
-		meshConfigFile: "testdata/mesh-with-automtls.yaml",
-		analyzer:       &auth.MTLSAnalyzer{},
-		expected:       []message{
-			// With autoMtls enabled, we should not generate a message
-		},
-	},
-	{
-		name:       "mtlsAnalyzerGlobalDestinationRuleNoMeshPolicy",
-		inputFiles: []string{"testdata/mtls-global-dr-no-meshpolicy.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected: []message{
-			{msg.MTLSPolicyConflict, "DestinationRule default.istio-system"},
-		},
-	},
-	{
-		name:       "mtlsAnalyzerIgnoresIstioControlPlane",
-		inputFiles: []string{"testdata/mtls-ignores-istio-control-plane.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected:   []message{
-			// no messages, this test case verifies no false positives
-		},
-	},
-	{
-		name:       "mtlsAnalyzerIgnoresSystemNamespaces",
-		inputFiles: []string{"testdata/mtls-ignores-system-namespaces.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected:   []message{
-			// no messages, this test case verifies no false positives
-		},
-	},
-	{
-		name:       "mtlsAnalyzerNoDestinationRule",
-		inputFiles: []string{"testdata/mtls-no-dr.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected: []message{
-			{msg.MTLSPolicyConflict, "Policy default.missing-dr"},
-		},
-	},
-	{
-		name:       "mtlsAnalyzerNoPolicy",
-		inputFiles: []string{"testdata/mtls-no-policy.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected: []message{
-			{msg.MTLSPolicyConflict, "DestinationRule no-policy-service-dr.no-policy"},
-		},
-	},
-	{
-		name:       "mtlsAnalyzerNoSidecar",
-		inputFiles: []string{"testdata/mtls-no-sidecar.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected: []message{
-			{msg.DestinationRuleUsesMTLSForWorkloadWithoutSidecar, "DestinationRule default.istio-system"},
-		},
-	},
-	{
-		name:       "mtlsAnalyzerWithExports",
-		inputFiles: []string{"testdata/mtls-exports.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected: []message{
-			{msg.MTLSPolicyConflict, "Policy default.primary"},
-		},
-	},
-	{
-		name:       "mtlsAnalyzerWithMeshPolicy",
-		inputFiles: []string{"testdata/mtls-meshpolicy.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected: []message{
-			{msg.MTLSPolicyConflict, "MeshPolicy default"},
-		},
-	},
-	{
-		name:       "mtlsAnalyzerWithPermissiveMeshPolicy",
-		inputFiles: []string{"testdata/mtls-meshpolicy-permissive.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected:   []message{
-			// no messages, this test case verifies no false positives
-		},
-	},
-	{
-		name:       "mtlsAnalyzerWithPort",
-		inputFiles: []string{"testdata/mtls-with-port.yaml"},
-		analyzer:   &auth.MTLSAnalyzer{},
-		expected: []message{
-			{msg.MTLSPolicyConflict, "DestinationRule default.my-namespace"},
-			{msg.MTLSPolicyConflict, "Policy default.my-namespace"},
 		},
 	},
 	{
@@ -194,10 +107,7 @@ var testGrid = []testCase{
 		inputFiles: []string{"testdata/deprecation.yaml"},
 		analyzer:   &deprecation.FieldAnalyzer{},
 		expected: []message{
-			{msg.Deprecated, "EnvoyFilter istio-multicluster-egressgateway.istio-system"},
-			{msg.Deprecated, "EnvoyFilter istio-multicluster-egressgateway.istio-system"}, // Duplicate, because resource has two problems
 			{msg.Deprecated, "ServiceRoleBinding bind-mongodb-viewer.default"},
-			{msg.Deprecated, "Policy policy-with-jwt.deprecation-policy"},
 		},
 	},
 	{
@@ -265,14 +175,19 @@ var testGrid = []testCase{
 		expected: []message{
 			{msg.NamespaceNotInjected, "Namespace bar"},
 			{msg.PodMissingProxy, "Pod noninjectedpod.default"},
+			{msg.NamespaceMultipleInjectionLabels, "Namespace busted"},
+			{msg.NamespaceInvalidInjectorRevision, "Namespace pidgeon-test"},
 		},
 	},
 	{
-		name:       "istioInjectionVersionMismatch",
-		inputFiles: []string{"testdata/injection-with-mismatched-sidecar.yaml"},
-		analyzer:   &injection.VersionAnalyzer{},
+		name: "istioInjectionProxyImageMismatch",
+		inputFiles: []string{
+			"testdata/injection-with-mismatched-sidecar.yaml",
+			"testdata/common/sidecar-injector-configmap.yaml",
+		},
+		analyzer: &injection.ImageAnalyzer{},
 		expected: []message{
-			{msg.IstioProxyVersionMismatch, "Pod details-v1-pod-old.enabled-namespace"},
+			{msg.IstioProxyImageMismatch, "Pod details-v1-pod-old.enabled-namespace"},
 		},
 	},
 	{
@@ -342,6 +257,7 @@ var testGrid = []testCase{
 			{msg.ReferencedResourceNotFound, "VirtualService reviews-mirror-bogushost.default"},
 			{msg.ReferencedResourceNotFound, "VirtualService reviews-bogusport.default"},
 			{msg.VirtualServiceDestinationPortSelectorRequired, "VirtualService reviews-2port-missing.default"},
+			{msg.ReferencedResourceNotFound, "VirtualService cross-namespace-details.istio-system"},
 		},
 	},
 	{
@@ -370,6 +286,35 @@ var testGrid = []testCase{
 			{msg.DeploymentAssociatedToMultipleServices, "Deployment multiple-without-port.bookinfo"},
 			{msg.DeploymentRequiresServiceAssociated, "Deployment no-services.bookinfo"},
 			{msg.DeploymentRequiresServiceAssociated, "Deployment ann-enabled-ns-disabled.injection-disabled-ns"},
+		},
+	},
+	{
+		name: "regexes",
+		inputFiles: []string{
+			"testdata/virtualservice_regexes.yaml",
+		},
+		analyzer: &virtualservice.RegexAnalyzer{},
+		expected: []message{
+			{msg.InvalidRegexp, "VirtualService bad-match"},
+			{msg.InvalidRegexp, "VirtualService ecma-not-v2"},
+			{msg.InvalidRegexp, "VirtualService lots-of-regexes"},
+			{msg.InvalidRegexp, "VirtualService lots-of-regexes"},
+			{msg.InvalidRegexp, "VirtualService lots-of-regexes"},
+			{msg.InvalidRegexp, "VirtualService lots-of-regexes"},
+			{msg.InvalidRegexp, "VirtualService lots-of-regexes"},
+			{msg.InvalidRegexp, "VirtualService lots-of-regexes"},
+		},
+	},
+	{
+		name: "unknown service registry in mesh networks",
+		inputFiles: []string{
+			"testdata/multicluster-unknown-serviceregistry.yaml",
+		},
+		meshNetworksFile: "testdata/common/meshnetworks.yaml",
+		analyzer:         &multicluster.MeshNetworksAnalyzer{},
+		expected: []message{
+			{msg.UnknownMeshNetworksServiceRegistry, "MeshNetworks meshnetworks.istio-system"},
+			{msg.UnknownMeshNetworksServiceRegistry, "MeshNetworks meshnetworks.istio-system"},
 		},
 	},
 }
@@ -469,6 +414,10 @@ func TestAnalyzersHaveUniqueNames(t *testing.T) {
 	for _, a := range All() {
 		n := a.Metadata().Name
 		_, ok := existingNames[n]
+		// TODO (Nino-K): remove this condition once metadata is clean up
+		if ok == true && n == "schema.ValidationAnalyzer.ServiceEntry" {
+			continue
+		}
 		g.Expect(ok).To(BeFalse(), fmt.Sprintf("Analyzer name %q is used more than once. "+
 			"Analyzers should be registered in All() exactly once and have a unique name.", n))
 
@@ -492,6 +441,13 @@ func setupAnalyzerForCase(tc testCase, cr snapshotter.CollectionReporterFn) (*lo
 		err := sa.AddFileKubeMeshConfig(tc.meshConfigFile)
 		if err != nil {
 			return nil, fmt.Errorf("error applying mesh config file %s: %v", tc.meshConfigFile, err)
+		}
+	}
+
+	if tc.meshNetworksFile != "" {
+		err := sa.AddFileKubeMeshNetworks(tc.meshNetworksFile)
+		if err != nil {
+			return nil, fmt.Errorf("error apply mesh networks file %s: %v", tc.meshNetworksFile, err)
 		}
 	}
 

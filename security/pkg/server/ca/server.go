@@ -27,21 +27,21 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
+	"k8s.io/client-go/kubernetes"
+
+	"istio.io/pkg/log"
 
 	caerror "istio.io/istio/security/pkg/pki/error"
 	"istio.io/istio/security/pkg/pki/util"
 	"istio.io/istio/security/pkg/registry"
 	"istio.io/istio/security/pkg/server/ca/authenticate"
 	pb "istio.io/istio/security/proto"
-	"istio.io/pkg/log"
-	"istio.io/pkg/version"
 )
 
 // Config for Vault prototyping purpose
 const (
 	jwtPath              = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	caCertPath           = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-	k8sAPIServerURL      = "https://kubernetes.default.svc/apis/authentication.k8s.io/v1/tokenreviews"
 	certExpirationBuffer = time.Minute
 )
 
@@ -86,6 +86,7 @@ type Server struct {
 // it is signed by the CA signing key.
 func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertificateRequest) (
 	*pb.IstioCertificateResponse, error) {
+	s.monitoring.CSR.Increment()
 	caller := s.authenticate(ctx)
 	if caller == nil {
 		serverCaLog.Warn("request authentication failure")
@@ -111,24 +112,28 @@ func (s *Server) CreateCertificate(ctx context.Context, request *pb.IstioCertifi
 	response := &pb.IstioCertificateResponse{
 		CertChain: respCertChain,
 	}
+	s.monitoring.Success.Increment()
 	serverCaLog.Debug("CSR successfully signed.")
 
 	return response, nil
 }
 
-// extractRootCertExpiryTimestamp returns the unix timestamp when the root becomes expires.
-func extractRootCertExpiryTimestamp(ca CertificateAuthority) float64 {
-	rb := ca.GetCAKeyCertBundle().GetRootCertPem()
-	cert, err := util.ParsePemEncodedCertificate(rb)
+func recordCertsExpiry(keyCertBundle util.KeyCertBundle) {
+	rootCertExpiry, err := keyCertBundle.ExtractRootCertExpiryTimestamp()
 	if err != nil {
-		serverCaLog.Errorf("Failed to parse the root cert: %v", err)
-		return -1
+		serverCaLog.Errorf("failed to extract root cert expiry timestamp (error %v)", err)
 	}
-	end := cert.NotAfter
-	if end.Before(time.Now()) {
-		serverCaLog.Errorf("Expired Citadel Root found, x509.NotAfter %v, please transit your root", end)
+	rootCertExpiryTimestamp.Record(rootCertExpiry)
+
+	if len(keyCertBundle.GetCertChainPem()) == 0 {
+		return
 	}
-	return float64(end.Unix())
+
+	certChainExpiry, err := keyCertBundle.ExtractCACertExpiryTimestamp()
+	if err != nil {
+		serverCaLog.Errorf("failed to extract CA cert expiry timestamp (error %v)", err)
+	}
+	certChainExpiryTimestamp.Record(certChainExpiry)
 }
 
 // HandleCSR handles an incoming certificate signing request (CSR). It does
@@ -221,13 +226,15 @@ func (s *Server) Run() error {
 
 // New creates a new instance of `IstioCAServiceServer`.
 func New(ca CertificateAuthority, ttl time.Duration, forCA bool,
-	hostlist []string, port int, trustDomain string, sdsEnabled bool, jwtPolicy string) (*Server, error) {
-	return NewWithGRPC(nil, ca, ttl, forCA, hostlist, port, trustDomain, sdsEnabled, jwtPolicy)
+	hostlist []string, port int, trustDomain string, sdsEnabled bool, jwtPolicy, clusterID string) (*Server, error) {
+	return NewWithGRPC(nil, ca, ttl, forCA, hostlist, port, trustDomain, sdsEnabled, jwtPolicy, clusterID, nil, nil)
 }
 
 // New creates a new instance of `IstioCAServiceServer`, running inside an existing gRPC server.
 func NewWithGRPC(grpc *grpc.Server, ca CertificateAuthority, ttl time.Duration, forCA bool,
-	hostlist []string, port int, trustDomain string, sdsEnabled bool, jwtPolicy string) (*Server, error) {
+	hostlist []string, port int, trustDomain string, sdsEnabled bool, jwtPolicy, clusterID string,
+	kubeClient kubernetes.Interface,
+	remoteKubeClientGetter authenticate.RemoteKubeClientGetter) (*Server, error) {
 
 	if len(hostlist) == 0 {
 		return nil, fmt.Errorf("failed to create grpc server hostlist empty")
@@ -240,14 +247,10 @@ func NewWithGRPC(grpc *grpc.Server, ca CertificateAuthority, ttl time.Duration, 
 
 	// Only add k8s jwt authenticator if SDS is enabled.
 	if sdsEnabled {
-		authenticator, err := authenticate.NewKubeJWTAuthenticator(k8sAPIServerURL, caCertPath, jwtPath,
+		authenticator := authenticate.NewKubeJWTAuthenticator(kubeClient, clusterID, remoteKubeClientGetter,
 			trustDomain, jwtPolicy)
-		if err == nil {
-			authenticators = append(authenticators, authenticator)
-			serverCaLog.Info("added K8s JWT authenticator")
-		} else {
-			serverCaLog.Warnf("failed to add JWT authenticator: %v", err)
-		}
+		authenticators = append(authenticators, authenticator)
+		serverCaLog.Info("added K8s JWT authenticator")
 	}
 
 	// Temporarily disable ID token authenticator by resetting the hostlist.
@@ -263,8 +266,7 @@ func NewWithGRPC(grpc *grpc.Server, ca CertificateAuthority, ttl time.Duration, 
 		}
 	}
 
-	version.Info.RecordComponentBuildTag("citadel")
-	rootCertExpiryTimestamp.Record(extractRootCertExpiryTimestamp(ca))
+	recordCertsExpiry(ca.GetCAKeyCertBundle())
 
 	server := &Server{
 		Authenticators: authenticators,
@@ -310,6 +312,19 @@ func (s *Server) getServerCertificate() (*tls.Certificate, error) {
 		RSAKeySize: 2048,
 	}
 
+	bundle := s.ca.GetCAKeyCertBundle()
+	if bundle != nil {
+		// cert bundles can have errors (e.g. missing SAN)
+		// that do not matter for getting the encryption type
+		_, privKey, _, _ := bundle.GetAll()
+		if util.IsSupportedECPrivateKey(privKey) {
+			opts = util.CertOptions{
+				ECSigAlg: util.EcdsaSigAlg,
+			}
+		}
+	}
+
+	// TODO the user can specify algorithm to generate for CSRs independent of CA certificate
 	csrPEM, privPEM, err := util.GenCSR(opts)
 	if err != nil {
 		return nil, err

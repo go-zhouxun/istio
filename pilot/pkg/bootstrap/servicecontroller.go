@@ -24,9 +24,9 @@ import (
 	"istio.io/istio/pilot/pkg/serviceregistry"
 	"istio.io/istio/pilot/pkg/serviceregistry/aggregate"
 	"istio.io/istio/pilot/pkg/serviceregistry/consul"
-	"istio.io/istio/pilot/pkg/serviceregistry/external"
 	kubecontroller "istio.io/istio/pilot/pkg/serviceregistry/kube/controller"
-	"istio.io/istio/pilot/pkg/serviceregistry/memory"
+	"istio.io/istio/pilot/pkg/serviceregistry/mock"
+	"istio.io/istio/pilot/pkg/serviceregistry/serviceentry"
 	"istio.io/istio/pkg/config/host"
 )
 
@@ -56,14 +56,19 @@ func (s *Server) initServiceControllers(args *PilotArgs) error {
 				return err
 			}
 		case serviceregistry.Mock:
-			s.initMemoryRegistry(serviceControllers)
+			s.initMockRegistry(serviceControllers)
 		default:
 			return fmt.Errorf("service registry %s is not supported", r)
 		}
 	}
 
-	s.serviceEntryStore = external.NewServiceDiscovery(s.configController, s.environment.IstioConfigStore, s.EnvoyXdsServer)
+	s.serviceEntryStore = serviceentry.NewServiceDiscovery(s.configController, s.environment.IstioConfigStore, s.EnvoyXdsServer)
 	serviceControllers.AddRegistry(s.serviceEntryStore)
+
+	if features.EnableServiceEntrySelectPods && s.kubeRegistry != nil {
+		// Add an instance handler in the service entry store to handle pod events from kubernetes registry
+		_ = s.kubeRegistry.AppendInstanceHandler(s.serviceEntryStore.ForeignServiceInstanceHandler)
+	}
 
 	// Defer running of the service controllers.
 	s.addStartFunc(func(stop <-chan struct{}) error {
@@ -85,7 +90,7 @@ func (s *Server) initKubeRegistry(serviceControllers *aggregate.Controller, args
 	} else {
 		args.Config.ControllerOptions.EndpointMode = kubecontroller.EndpointsOnly
 	}
-	kubeRegistry := kubecontroller.NewController(s.kubeClient, args.Config.ControllerOptions)
+	kubeRegistry := kubecontroller.NewController(s.kubeClient, s.metadataClient, args.Config.ControllerOptions)
 	s.kubeRegistry = kubeRegistry
 	serviceControllers.AddRegistry(kubeRegistry)
 	return
@@ -102,14 +107,14 @@ func (s *Server) initConsulRegistry(serviceControllers *aggregate.Controller, ar
 	return nil
 }
 
-func (s *Server) initMemoryRegistry(serviceControllers *aggregate.Controller) {
+func (s *Server) initMockRegistry(serviceControllers *aggregate.Controller) {
 	// MemServiceDiscovery implementation
-	discovery := memory.NewDiscovery(map[host.Name]*model.Service{}, 2)
+	discovery := mock.NewDiscovery(map[host.Name]*model.Service{}, 2)
 
 	registry := serviceregistry.Simple{
 		ProviderID:       serviceregistry.Mock,
 		ServiceDiscovery: discovery,
-		Controller:       &memory.MockController{},
+		Controller:       &mock.Controller{},
 	}
 
 	serviceControllers.AddRegistry(registry)

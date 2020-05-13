@@ -25,20 +25,20 @@ import (
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	xdscore "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	http_conn "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
-	"github.com/envoyproxy/go-control-plane/pkg/conversion"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/protobuf/ptypes"
+
+	"istio.io/pkg/log"
 
 	"istio.io/istio/pilot/pkg/model"
 	v2 "istio.io/istio/pilot/pkg/proxy/envoy/v2"
 	"istio.io/istio/pkg/config/mesh"
 	"istio.io/istio/pkg/test/framework"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/components/galley"
 	"istio.io/istio/pkg/test/framework/components/namespace"
 	"istio.io/istio/pkg/test/framework/components/pilot"
 	"istio.io/istio/pkg/test/framework/resource"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 )
 
 const (
@@ -78,7 +78,6 @@ spec:
     match:
       context: SIDECAR_INBOUND
       listener:
-        portNumber: 80
         filterChain:
           filter:
             name: "envoy.http_connection_manager"
@@ -89,7 +88,7 @@ spec:
           "@type": "type.googleapis.com/envoy.config.filter.network.http_connection_manager.v2.HttpConnectionManager"
           access_log:
           - name: envoy.http_grpc_access_log
-            config: 
+            config:
               common_config:
                 log_name: "grpc-als-example"
                 grpc_service:
@@ -154,15 +153,14 @@ spec:
   - address: 2.2.2.2
 `
 	PermissiveMtls = `
-apiVersion: authentication.istio.io/v1alpha1
-kind: Policy
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
 metadata:
   name: default
   namespace: {{.AppNamespace}}
 spec:
-  peers:
-  - mtls:
-      mode: PERMISSIVE
+  mtls:
+    mode: PERMISSIVE
 `
 	MeshConfig = `
 disablePolicyChecks: false
@@ -179,9 +177,9 @@ func setupTest(t *testing.T, ctx resource.Context, modifyConfig func(c Config) C
 	meshConfig := mesh.DefaultMeshConfig()
 	meshConfig.MixerCheckServer = "istio-policy.istio-system.svc.cluster.local:15004"
 	meshConfig.MixerReportServer = "istio-telemetry.istio-system.svc.cluster.local:15004"
+	meshConfig.DisableMixerHttpReports = false
 
-	g := galley.NewOrFail(t, ctx, galley.Config{MeshConfig: MeshConfig})
-	p := pilot.NewOrFail(t, ctx, pilot.Config{Galley: g, MeshConfig: &meshConfig})
+	p := pilot.NewOrFail(t, ctx, pilot.Config{MeshConfig: &meshConfig})
 
 	appNamespace := namespace.NewOrFail(t, ctx, namespace.Config{
 		Prefix: "app",
@@ -193,10 +191,10 @@ func setupTest(t *testing.T, ctx resource.Context, modifyConfig func(c Config) C
 	})
 
 	// Apply all configs
-	createConfig(t, g, config, EnvoyFilterConfig, appNamespace)
-	createConfig(t, g, config, AppConfig, appNamespace)
-	createConfig(t, g, config, IncludedConfig, appNamespace)
-	createConfig(t, g, config, PermissiveMtls, appNamespace)
+	createConfig(t, ctx, config, EnvoyFilterConfig, appNamespace)
+	createConfig(t, ctx, config, AppConfig, appNamespace)
+	createConfig(t, ctx, config, IncludedConfig, appNamespace)
+	createConfig(t, ctx, config, PermissiveMtls, appNamespace)
 
 	time.Sleep(time.Second * 2)
 
@@ -211,7 +209,7 @@ func setupTest(t *testing.T, ctx resource.Context, modifyConfig func(c Config) C
 	return p, nodeID
 }
 
-func createConfig(t *testing.T, g galley.Instance, config Config, yaml string, namespace namespace.Instance) {
+func createConfig(t *testing.T, ctx resource.Context, config Config, yaml string, namespace namespace.Instance) {
 	tmpl, err := template.New("Config").Parse(yaml)
 	if err != nil {
 		t.Errorf("failed to create template: %v", err)
@@ -220,7 +218,7 @@ func createConfig(t *testing.T, g galley.Instance, config Config, yaml string, n
 	if err := tmpl.Execute(&buf, config); err != nil {
 		t.Errorf("failed to create template: %v", err)
 	}
-	if err := g.ApplyConfig(namespace, buf.String()); err != nil {
+	if err := ctx.ApplyConfig(namespace.Name(), buf.String()); err != nil {
 		t.Fatalf("failed to apply config: %v. Config: %v", err, buf.String())
 	}
 }
@@ -257,7 +255,6 @@ func TestEnvoyFilterHTTPFilterInsertBefore(t *testing.T) {
 
 func checkHTTPFilter(resp *xdsapi.DiscoveryResponse) (success bool, e error) {
 	expected := map[string]struct{}{
-		"1.1.1.1_80":      {},
 		"0.0.0.0_80":      {},
 		"virtualInbound":  {},
 		"virtualOutbound": {},
@@ -273,28 +270,25 @@ func checkHTTPFilter(resp *xdsapi.DiscoveryResponse) (success bool, e error) {
 			return false, err
 		}
 		got[c.Name] = struct{}{}
-		if c.Name == "1.1.1.1_80" {
+		if c.Name == "virtualInbound" {
 			listenerToCheck = c
 		}
 	}
 	if !reflect.DeepEqual(expected, got) {
 		return false, fmt.Errorf("excepted listeners %+v, got %+v", expected, got)
 	}
+	if listenerToCheck == nil {
+		return false, fmt.Errorf("missing inbound listener")
+	}
 
 	// check for hcm, http filters
+	matched := false
 	for _, fc := range listenerToCheck.FilterChains {
 		for _, networkFilter := range fc.Filters {
 			if networkFilter.Name == wellknown.HTTPConnectionManager {
 				hcm := &http_conn.HttpConnectionManager{}
-				if networkFilter.GetTypedConfig() != nil {
-					if err := ptypes.UnmarshalAny(networkFilter.GetTypedConfig(), hcm); err != nil {
-						return false, fmt.Errorf("failed to unmarshall HCM (Any) from 1.1.1.1_80 listener: %v", err)
-					}
-				} else {
-					// nolint: staticcheck
-					if err := conversion.StructToMessage(networkFilter.GetConfig(), hcm); err != nil {
-						return false, fmt.Errorf("failed to unmarshall HCM (Struct) from 1.1.1.1_80 listener: %v", err)
-					}
+				if err := ptypes.UnmarshalAny(networkFilter.GetTypedConfig(), hcm); err != nil {
+					return false, fmt.Errorf("failed to unmarshall HCM (Any) from inbound listener: %v", err)
 				}
 
 				if err := hcm.Validate(); err != nil {
@@ -305,8 +299,8 @@ func checkHTTPFilter(resp *xdsapi.DiscoveryResponse) (success bool, e error) {
 					httpFiltersFound = append(httpFiltersFound, httpFilter.Name)
 				}
 				if !reflect.DeepEqual(expectedHTTPFilters, httpFiltersFound) {
-					return false, fmt.Errorf("excepted http filters %+v, got %+v",
-						expectedHTTPFilters, httpFiltersFound)
+					log.Warnf("hcm %v did match http filters: %v", hcm.ServerName, httpFiltersFound)
+					continue
 				}
 
 				accessLogFiltersFound := make([]string, 0)
@@ -314,12 +308,15 @@ func checkHTTPFilter(resp *xdsapi.DiscoveryResponse) (success bool, e error) {
 					accessLogFiltersFound = append(accessLogFiltersFound, al.Name)
 				}
 				if !reflect.DeepEqual(expectedHTTPAccessLogFilteers, accessLogFiltersFound) {
-					return false, fmt.Errorf("excepted accesslog filters %+v, got %+v",
-						expectedHTTPAccessLogFilteers, accessLogFiltersFound)
+					log.Warnf("hcm %v did match access log filters filters: %v", hcm.ServerName, accessLogFiltersFound)
+					continue
 				}
-
+				matched = true
 			}
 		}
+	}
+	if !matched {
+		return false, fmt.Errorf("failed to find expected HCM")
 	}
 	return true, nil
 }

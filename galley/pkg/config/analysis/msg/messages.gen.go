@@ -33,9 +33,9 @@ var (
 	// Description: Unhandled gateway port
 	GatewayPortNotOnWorkload = diag.NewMessageType(diag.Warning, "IST0104", "The gateway refers to a port that is not exposed on the workload (pod selector %s; port %d)")
 
-	// IstioProxyVersionMismatch defines a diag.MessageType for message "IstioProxyVersionMismatch".
-	// Description: The version of the Istio proxy running on the pod does not match the version used by the istio injector.
-	IstioProxyVersionMismatch = diag.NewMessageType(diag.Warning, "IST0105", "The version of the Istio proxy running on the pod does not match the version used by the istio injector (pod version: %s; injector version: %s). This often happens after upgrading the Istio control-plane and can be fixed by redeploying the pod.")
+	// IstioProxyImageMismatch defines a diag.MessageType for message "IstioProxyImageMismatch".
+	// Description: The image of the Istio proxy running on the pod does not match the image defined in the injection configuration.
+	IstioProxyImageMismatch = diag.NewMessageType(diag.Warning, "IST0105", "The image of the Istio proxy running on the pod does not match the image defined in the injection configuration (pod image: %s; injection configuration image: %s). This often happens after upgrading the Istio control-plane and can be fixed by redeploying the pod.")
 
 	// SchemaValidationError defines a diag.MessageType for message "SchemaValidationError".
 	// Description: The resource has a schema validation error.
@@ -92,6 +92,34 @@ var (
 	// JwtFailureDueToInvalidServicePortPrefix defines a diag.MessageType for message "JwtFailureDueToInvalidServicePortPrefix".
 	// Description: Authentication policy with JWT targets Service with invalid port specification.
 	JwtFailureDueToInvalidServicePortPrefix = diag.NewMessageType(diag.Warning, "IST0119", "Authentication policy with JWT targets Service with invalid port specification (port: %d, name: %s, protocol: %s, targetPort: %s).")
+
+	// PolicyResourceIsDeprecated defines a diag.MessageType for message "PolicyResourceIsDeprecated".
+	// Description: The Policy resource is deprecated and will be removed in a future Istio release. Migrate to the PeerAuthentication resource.
+	PolicyResourceIsDeprecated = diag.NewMessageType(diag.Info, "IST0120", "The Policy resource is deprecated and will be removed in a future Istio release. Migrate to the PeerAuthentication resource.")
+
+	// MeshPolicyResourceIsDeprecated defines a diag.MessageType for message "MeshPolicyResourceIsDeprecated".
+	// Description: The MeshPolicy resource is deprecated and will be removed in a future Istio release. Migrate to the PeerAuthentication resource.
+	MeshPolicyResourceIsDeprecated = diag.NewMessageType(diag.Info, "IST0121", "The MeshPolicy resource is deprecated and will be removed in a future Istio release. Migrate to the PeerAuthentication resource.")
+
+	// InvalidRegexp defines a diag.MessageType for message "InvalidRegexp".
+	// Description: Invalid Regex
+	InvalidRegexp = diag.NewMessageType(diag.Warning, "IST0122", "Field %q regular expression invalid: %q (%s)")
+
+	// NamespaceMultipleInjectionLabels defines a diag.MessageType for message "NamespaceMultipleInjectionLabels".
+	// Description: A namespace has both new and legacy injection labels
+	NamespaceMultipleInjectionLabels = diag.NewMessageType(diag.Warning, "IST0123", "The namespace has both new and legacy injection labels. Run 'kubectl label namespace %s istio.io/rev-' or 'kubectl label namespace %s istio-injection-'")
+
+	// NamespaceInvalidInjectorRevision defines a diag.MessageType for message "NamespaceInvalidInjectorRevision".
+	// Description: A namespace is labeled to inject from unknown control plane.
+	NamespaceInvalidInjectorRevision = diag.NewMessageType(diag.Warning, "IST0124", "The namespace is labeled to inject from %q but that namespace doesn't exist. Run 'kubectl label namespace %s istio.io/rev=<revision>' where <revision> is one of %s")
+
+	// InvalidAnnotation defines a diag.MessageType for message "InvalidAnnotation".
+	// Description: An Istio annotation that is not valid
+	InvalidAnnotation = diag.NewMessageType(diag.Warning, "IST0125", "Invalid annotation %s: %s")
+
+	// UnknownMeshNetworksServiceRegistry defines a diag.MessageType for message "UnknownMeshNetworksServiceRegistry".
+	// Description: A service registry in Mesh Networks is unknown
+	UnknownMeshNetworksServiceRegistry = diag.NewMessageType(diag.Error, "IST0126", "Unknown service registry %s in network %s")
 )
 
 // All returns a list of all known message types.
@@ -103,7 +131,7 @@ func All() []*diag.MessageType {
 		NamespaceNotInjected,
 		PodMissingProxy,
 		GatewayPortNotOnWorkload,
-		IstioProxyVersionMismatch,
+		IstioProxyImageMismatch,
 		SchemaValidationError,
 		MisplacedAnnotation,
 		UnknownAnnotation,
@@ -118,6 +146,13 @@ func All() []*diag.MessageType {
 		DeploymentRequiresServiceAssociated,
 		PortNameIsNotUnderNamingConvention,
 		JwtFailureDueToInvalidServicePortPrefix,
+		PolicyResourceIsDeprecated,
+		MeshPolicyResourceIsDeprecated,
+		InvalidRegexp,
+		NamespaceMultipleInjectionLabels,
+		NamespaceInvalidInjectorRevision,
+		InvalidAnnotation,
+		UnknownMeshNetworksServiceRegistry,
 	}
 }
 
@@ -177,13 +212,13 @@ func NewGatewayPortNotOnWorkload(r *resource.Instance, selector string, port int
 	)
 }
 
-// NewIstioProxyVersionMismatch returns a new diag.Message based on IstioProxyVersionMismatch.
-func NewIstioProxyVersionMismatch(r *resource.Instance, proxyVersion string, injectionVersion string) diag.Message {
+// NewIstioProxyImageMismatch returns a new diag.Message based on IstioProxyImageMismatch.
+func NewIstioProxyImageMismatch(r *resource.Instance, proxyImage string, injectionImage string) diag.Message {
 	return diag.NewMessage(
-		IstioProxyVersionMismatch,
+		IstioProxyImageMismatch,
 		r,
-		proxyVersion,
-		injectionVersion,
+		proxyImage,
+		injectionImage,
 	)
 }
 
@@ -301,11 +336,10 @@ func NewDeploymentAssociatedToMultipleServices(r *resource.Instance, deployment 
 }
 
 // NewDeploymentRequiresServiceAssociated returns a new diag.Message based on DeploymentRequiresServiceAssociated.
-func NewDeploymentRequiresServiceAssociated(r *resource.Instance, deployment string) diag.Message {
+func NewDeploymentRequiresServiceAssociated(r *resource.Instance) diag.Message {
 	return diag.NewMessage(
 		DeploymentRequiresServiceAssociated,
 		r,
-		deployment,
 	)
 }
 
@@ -329,5 +363,73 @@ func NewJwtFailureDueToInvalidServicePortPrefix(r *resource.Instance, port int, 
 		portName,
 		protocol,
 		targetPort,
+	)
+}
+
+// NewPolicyResourceIsDeprecated returns a new diag.Message based on PolicyResourceIsDeprecated.
+func NewPolicyResourceIsDeprecated(r *resource.Instance) diag.Message {
+	return diag.NewMessage(
+		PolicyResourceIsDeprecated,
+		r,
+	)
+}
+
+// NewMeshPolicyResourceIsDeprecated returns a new diag.Message based on MeshPolicyResourceIsDeprecated.
+func NewMeshPolicyResourceIsDeprecated(r *resource.Instance) diag.Message {
+	return diag.NewMessage(
+		MeshPolicyResourceIsDeprecated,
+		r,
+	)
+}
+
+// NewInvalidRegexp returns a new diag.Message based on InvalidRegexp.
+func NewInvalidRegexp(r *resource.Instance, where string, re string, problem string) diag.Message {
+	return diag.NewMessage(
+		InvalidRegexp,
+		r,
+		where,
+		re,
+		problem,
+	)
+}
+
+// NewNamespaceMultipleInjectionLabels returns a new diag.Message based on NamespaceMultipleInjectionLabels.
+func NewNamespaceMultipleInjectionLabels(r *resource.Instance, namespace string, namespace2 string) diag.Message {
+	return diag.NewMessage(
+		NamespaceMultipleInjectionLabels,
+		r,
+		namespace,
+		namespace2,
+	)
+}
+
+// NewNamespaceInvalidInjectorRevision returns a new diag.Message based on NamespaceInvalidInjectorRevision.
+func NewNamespaceInvalidInjectorRevision(r *resource.Instance, unknownrevision string, namespace string, revisions string) diag.Message {
+	return diag.NewMessage(
+		NamespaceInvalidInjectorRevision,
+		r,
+		unknownrevision,
+		namespace,
+		revisions,
+	)
+}
+
+// NewInvalidAnnotation returns a new diag.Message based on InvalidAnnotation.
+func NewInvalidAnnotation(r *resource.Instance, annotation string, problem string) diag.Message {
+	return diag.NewMessage(
+		InvalidAnnotation,
+		r,
+		annotation,
+		problem,
+	)
+}
+
+// NewUnknownMeshNetworksServiceRegistry returns a new diag.Message based on UnknownMeshNetworksServiceRegistry.
+func NewUnknownMeshNetworksServiceRegistry(r *resource.Instance, serviceregistry string, network string) diag.Message {
+	return diag.NewMessage(
+		UnknownMeshNetworksServiceRegistry,
+		r,
+		serviceregistry,
+		network,
 	)
 }

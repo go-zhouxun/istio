@@ -19,13 +19,12 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"istio.io/istio/pkg/test"
-	"istio.io/istio/pkg/test/framework/components/environment"
 	"istio.io/istio/pkg/test/framework/components/istio"
 	"istio.io/istio/pkg/test/framework/resource"
-
-	"time"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 )
 
 // CallType defines ingress gateway type
@@ -91,6 +90,9 @@ type Instance interface {
 	// HTTPSAddress returns the external HTTPS address of the ingress gateway (or the
 	// NodePort address, when running under Minikube).
 	HTTPSAddress() net.TCPAddr
+	// TCPAddress returns the external TCP address of the ingress gateway (or the NodePort address,
+	// when running under Minikube).
+	TCPAddress() net.TCPAddr
 
 	//  Call makes a call through ingress.
 	Call(options CallOptions) (CallResponse, error)
@@ -104,6 +106,8 @@ type Config struct {
 	Istio istio.Instance
 	// IngressType specifies the type of ingress gateway.
 	IngressType CallType
+	// Cluster to be used in a multicluster environment
+	Cluster resource.Cluster
 }
 
 // CallResponse is the result of a call made through Istio Ingress.

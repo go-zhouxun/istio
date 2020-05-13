@@ -20,14 +20,13 @@ import (
 	"strings"
 	"time"
 
+	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/pkg/test/util/retry"
 
 	"istio.io/istio/pkg/test/echo/common/scheme"
 	"istio.io/istio/pkg/test/framework"
 	"istio.io/istio/pkg/test/framework/components/echo"
 	"istio.io/istio/pkg/test/framework/components/echo/echoboot"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/components/galley"
 	"istio.io/istio/pkg/test/framework/components/namespace"
 	"istio.io/istio/pkg/test/framework/components/pilot"
 	"istio.io/istio/pkg/test/util/file"
@@ -43,6 +42,10 @@ type TestCase struct {
 	ConfigFile string
 	Namespace  namespace.Instance
 
+	// CallOpts specified the call options for destination service. If not specified, use the default
+	// framework provided ones.
+	CallOpts []echo.CallOptions
+
 	RequiredEnvironment environment.Name
 
 	// Indicates whether a test should be created for the given configuration.
@@ -57,38 +60,53 @@ type TestCase struct {
 
 // Context is a context for reachability tests.
 type Context struct {
-	ctx                   framework.TestContext
-	g                     galley.Instance
-	p                     pilot.Instance
-	Namespace             namespace.Instance
-	A, B, Headless, Naked echo.Instance
+	ctx          framework.TestContext
+	p            pilot.Instance
+	Namespace    namespace.Instance
+	A, B         echo.Instance
+	Multiversion echo.Instance
+	Headless     echo.Instance
+	Naked        echo.Instance
 }
 
 // CreateContext creates and initializes reachability context.
-func CreateContext(ctx framework.TestContext, g galley.Instance, p pilot.Instance) Context {
+func CreateContext(ctx framework.TestContext, p pilot.Instance) Context {
 	ns := namespace.NewOrFail(ctx, ctx, namespace.Config{
 		Prefix: "reachability",
 		Inject: true,
 	})
 
-	var a, b, headless, naked echo.Instance
+	var a, b, multiVersion, headless, naked echo.Instance
+	cfg := util.EchoConfig("multiversion", ns, false, nil, p)
+	cfg.Subsets = []echo.SubsetConfig{
+		// Istio deployment, with sidecar.
+		{
+			Version: "vistio",
+		},
+		// Legacy deployment subset, does not have sidecar injected.
+		{
+			Version:     "vlegacy",
+			Annotations: echo.NewAnnotations().SetBool(echo.SidecarInject, false),
+		},
+	}
 	echoboot.NewBuilderOrFail(ctx, ctx).
-		With(&a, util.EchoConfig("a", ns, false, nil, g, p)).
-		With(&b, util.EchoConfig("b", ns, false, nil, g, p)).
-		With(&headless, util.EchoConfig("headless", ns, true, nil, g, p)).
+		With(&a, util.EchoConfig("a", ns, false, nil, p)).
+		With(&b, util.EchoConfig("b", ns, false, nil, p)).
+		With(&multiVersion, cfg).
+		With(&headless, util.EchoConfig("headless", ns, true, nil, p)).
 		With(&naked, util.EchoConfig("naked", ns, false, echo.NewAnnotations().
-			SetBool(echo.SidecarInject, false), g, p)).
+			SetBool(echo.SidecarInject, false), p)).
 		BuildOrFail(ctx)
 
 	return Context{
-		ctx:       ctx,
-		g:         g,
-		p:         p,
-		Namespace: ns,
-		A:         a,
-		B:         b,
-		Headless:  headless,
-		Naked:     naked,
+		ctx:          ctx,
+		p:            p,
+		Namespace:    ns,
+		A:            a,
+		B:            b,
+		Multiversion: multiVersion,
+		Headless:     headless,
+		Naked:        naked,
 	}
 }
 
@@ -105,7 +123,7 @@ func (rc *Context) Run(testCases []TestCase) {
 		},
 		{
 			PortName: "tcp",
-			Scheme:   scheme.HTTP,
+			Scheme:   scheme.TCP,
 		},
 		{
 			PortName: "grpc",
@@ -127,20 +145,28 @@ func (rc *Context) Run(testCases []TestCase) {
 			// Apply the policy.
 			policyYAML := file.AsStringOrFail(ctx, filepath.Join("./testdata", c.ConfigFile))
 			retry.UntilSuccessOrFail(ctx, func() error {
+				ctx.Logf("[%s] [%v] Apply config %s", testName, time.Now(), c.ConfigFile)
 				// TODO(https://github.com/istio/istio/issues/20460) We shouldn't need a retry loop
-				return rc.g.ApplyConfig(c.Namespace, policyYAML)
+				return rc.ctx.ApplyConfig(c.Namespace.Name(), policyYAML)
 			})
 			ctx.WhenDone(func() error {
-				return rc.g.DeleteConfig(c.Namespace, policyYAML)
+				return rc.ctx.DeleteConfig(c.Namespace.Name(), policyYAML)
 			})
 
 			// Give some time for the policy propagate.
 			// TODO: query pilot or app to know instead of sleep.
+			ctx.Logf("[%s] [%v] Wait for config propagate to endpoints...", testName, time.Now())
 			time.Sleep(10 * time.Second)
+			ctx.Logf("[%s] [%v] Finish waiting. Continue testing.", testName, time.Now())
 
 			for _, src := range []echo.Instance{rc.A, rc.B, rc.Headless, rc.Naked} {
-				for _, dest := range []echo.Instance{rc.A, rc.B, rc.Headless, rc.Naked} {
-					for _, opts := range callOptions {
+				for _, dest := range []echo.Instance{rc.A, rc.B, rc.Headless, rc.Multiversion, rc.Naked} {
+					copts := &callOptions
+					// If test case specified service call options, use that instead.
+					if c.CallOpts != nil {
+						copts = &c.CallOpts
+					}
+					for _, opts := range *copts {
 						// Copy the loop variables so they won't change for the subtests.
 						src := src
 						dest := dest
@@ -153,11 +179,12 @@ func (rc *Context) Run(testCases []TestCase) {
 						if c.Include(src, opts) {
 							expectSuccess := c.ExpectSuccess(src, opts)
 
-							subTestName := fmt.Sprintf("%s->%s://%s:%s",
+							subTestName := fmt.Sprintf("%s->%s://%s:%s%s",
 								src.Config().Service,
 								opts.Scheme,
 								dest.Config().Service,
-								opts.PortName)
+								opts.PortName,
+								opts.Path)
 
 							ctx.NewSubTest(subTestName).
 								RunParallel(func(ctx framework.TestContext) {

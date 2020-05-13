@@ -2,7 +2,7 @@ apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   addonComponents:
-    coreDNS:
+    istiocoredns:
       enabled: true
 
   components:
@@ -21,11 +21,6 @@ spec:
         enabled: true
 
       controlPlaneSecurityEnabled: true
-
-    # Multicluster with gateways requires a root CA
-    # Cluster local CAs are bootstrapped with the root CA.
-    security:
-      selfSigned: false
 
     gateways:
       istio-egressgateway:

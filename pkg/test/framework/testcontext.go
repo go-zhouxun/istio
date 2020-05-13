@@ -24,11 +24,10 @@ import (
 	"testing"
 
 	"istio.io/istio/pkg/test"
-	"istio.io/istio/pkg/test/framework/components/environment"
-	"istio.io/istio/pkg/test/framework/core"
 	"istio.io/istio/pkg/test/framework/errors"
 	"istio.io/istio/pkg/test/framework/label"
 	"istio.io/istio/pkg/test/framework/resource"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 	"istio.io/istio/pkg/test/scopes"
 )
 
@@ -57,6 +56,7 @@ type TestContext interface {
 	RequireOrSkip(envName environment.Name)
 
 	// WhenDone runs the given function when the test context completes.
+	// This function may not (safely) access the test context.
 	WhenDone(fn func() error)
 
 	// Done should be called when this context is no longer needed. It triggers the asynchronous cleanup of any
@@ -131,7 +131,7 @@ func newTestContext(test *Test, goTest *testing.T, s *suiteContext, parentScope 
 	}
 }
 
-func (c *testContext) Settings() *core.Settings {
+func (c *testContext) Settings() *resource.Settings {
 	return c.suite.settings
 }
 
@@ -180,6 +180,54 @@ func (c *testContext) CreateTmpDirectory(prefix string) (string, error) {
 	}
 
 	return dir, err
+}
+
+func (c *testContext) ApplyConfig(ns string, yamlText ...string) error {
+	for _, cc := range c.Environment().Clusters() {
+		if err := cc.ApplyConfig(ns, yamlText...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *testContext) ApplyConfigOrFail(t test.Failer, ns string, yamlText ...string) {
+	for _, cc := range c.Environment().Clusters() {
+		cc.ApplyConfigOrFail(t, ns, yamlText...)
+	}
+}
+
+func (c *testContext) DeleteConfig(ns string, yamlText ...string) error {
+	for _, cc := range c.Environment().Clusters() {
+		if err := cc.DeleteConfig(ns, yamlText...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *testContext) DeleteConfigOrFail(t test.Failer, ns string, yamlText ...string) {
+	for _, cc := range c.Environment().Clusters() {
+		cc.DeleteConfigOrFail(t, ns, yamlText...)
+	}
+}
+
+func (c *testContext) ApplyConfigDir(ns string, configDir string) error {
+	for _, cc := range c.Environment().Clusters() {
+		if err := cc.ApplyConfigDir(ns, configDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *testContext) DeleteConfigDir(ns string, configDir string) error {
+	for _, cc := range c.Environment().Clusters() {
+		if err := cc.DeleteConfigDir(ns, configDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *testContext) CreateTmpDirectoryOrFail(prefix string) string {

@@ -26,17 +26,15 @@ import (
 )
 
 type kubeComponent struct {
-	config Config
-	id     resource.ID
-	ctx    resource.Context
-	env    *kube.Environment
+	config  Config
+	id      resource.ID
+	cluster kube.Cluster
 }
 
 func newKube(ctx resource.Context, config Config) Instance {
 	n := &kubeComponent{
-		ctx:    ctx,
-		config: config,
-		env:    ctx.Environment().(*kube.Environment),
+		config:  config,
+		cluster: kube.ClusterOrDefault(config.Cluster, ctx.Environment()),
 	}
 	n.id = ctx.TrackResource(n)
 
@@ -49,25 +47,29 @@ func (c *kubeComponent) ID() resource.ID {
 }
 
 // Invoke implements Instance
-func (c *kubeComponent) Invoke(args []string) (string, error) {
-	var envArgs = []string{
+func (c *kubeComponent) Invoke(args []string) (string, string, error) {
+	var cmdArgs = append([]string{
 		"--kubeconfig",
-		c.env.Settings().KubeConfig,
-	}
+		c.cluster.Filename(),
+	}, args...)
+
 	var out bytes.Buffer
-	rootCmd := cmd.GetRootCmd(append(envArgs, args...))
-	rootCmd.SetOutput(&out)
+	var err bytes.Buffer
+	rootCmd := cmd.GetRootCmd(cmdArgs)
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&err)
 	fErr := rootCmd.Execute()
-	return out.String(), fErr
+	return out.String(), err.String(), fErr
 }
 
 // InvokeOrFail implements Instance
-func (c *kubeComponent) InvokeOrFail(t *testing.T, args []string) string {
-	output, err := c.Invoke(args)
+func (c *kubeComponent) InvokeOrFail(t *testing.T, args []string) (string, string) {
+	output, stderr, err := c.Invoke(args)
 	if err != nil {
 		t.Logf("Unwanted exception for 'istioctl %s': %v", strings.Join(args, " "), err)
 		t.Logf("Output:\n%v", output)
+		t.Logf("Error:\n%v", stderr)
 		t.FailNow()
 	}
-	return output
+	return output, stderr
 }

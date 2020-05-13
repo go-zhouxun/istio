@@ -19,13 +19,15 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/gogo/protobuf/types"
+
 	"istio.io/istio/pkg/config/mesh"
 )
 
 func TestEnvoyArgs(t *testing.T) {
 	proxyConfig := mesh.DefaultProxyConfig()
 	proxyConfig.ServiceCluster = "my-cluster"
-	proxyConfig.Concurrency = 8
+	proxyConfig.Concurrency = &types.Int32Value{Value: 8}
 
 	cfg := ProxyConfig{
 		Config:            proxyConfig,
@@ -33,12 +35,9 @@ func TestEnvoyArgs(t *testing.T) {
 		LogLevel:          "trace",
 		ComponentLogLevel: "misc:error",
 		NodeIPs:           []string{"10.75.2.9", "192.168.11.18"},
-		DNSRefreshRate:    "60s",
 		PodName:           "",
 		PodNamespace:      "",
 		PodIP:             nil,
-		SDSUDSPath:        "udspath",
-		SDSTokenPath:      "tokenpath",
 	}
 
 	test := &envoy{
@@ -61,7 +60,7 @@ func TestEnvoyArgs(t *testing.T) {
 		"--service-node", "my-node",
 		"--max-obj-name-len", fmt.Sprint(proxyConfig.StatNameLength),
 		"--local-address-ip-version", "v4",
-		"--log-format", "[Envoy (Epoch 5)] [%Y-%m-%d %T.%e][%t][%l][%n] %v",
+		"--log-format", "%Y-%m-%dT%T.%fZ\t%l\tenvoy %n\t%v",
 		"-l", "trace",
 		"--component-log-level", "misc:error",
 		"--config-yaml", `{"key": "value"}`,

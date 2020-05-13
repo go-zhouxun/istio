@@ -76,15 +76,15 @@ func doTest(t *testing.T, ctx framework.TestContext) {
 			Service:             "inoutsplitapp0",
 			Namespace:           ns,
 			Ports:               ports,
-			Galley:              g,
+			Subsets:             []echo.SubsetConfig{{}},
 			Pilot:               p,
 			IncludeInboundPorts: "*",
 		}).
 		With(&inoutSplitApp1, echo.Config{
 			Service:             "inoutsplitapp1",
 			Namespace:           ns,
+			Subsets:             []echo.SubsetConfig{{}},
 			Ports:               ports,
-			Galley:              g,
 			Pilot:               p,
 			IncludeInboundPorts: "*",
 		}).
@@ -92,15 +92,15 @@ func doTest(t *testing.T, ctx framework.TestContext) {
 			&inoutUnitedApp0, echo.Config{
 				Service:   "inoutunitedapp0",
 				Namespace: ns,
+				Subsets:   []echo.SubsetConfig{{}},
 				Ports:     ports,
-				Galley:    g,
 				Pilot:     p,
 			}).
 		With(&inoutUnitedApp1, echo.Config{
 			Service:   "inoutunitedapp1",
 			Namespace: ns,
+			Subsets:   []echo.SubsetConfig{{}},
 			Ports:     ports,
-			Galley:    g,
 			Pilot:     p,
 		}).
 		BuildOrFail(ctx)

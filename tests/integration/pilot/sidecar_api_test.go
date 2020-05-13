@@ -24,8 +24,9 @@ import (
 
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pkg/test/framework"
-	"istio.io/istio/pkg/test/framework/components/environment"
 	"istio.io/istio/pkg/test/framework/components/pilot"
+	"istio.io/istio/pkg/test/framework/resource/environment"
+	"istio.io/istio/pkg/test/scopes"
 	"istio.io/istio/pkg/test/util/structpath"
 )
 
@@ -65,10 +66,15 @@ func TestSidecarListeners(t *testing.T) {
 			if err != nil {
 				t.Fatalf("No such directory: %v", err)
 			}
-			err = g.ApplyConfigDir(nil, path)
+			err = ctx.ApplyConfigDir("", path)
 			if err != nil {
 				t.Fatalf("Error applying directory: %v", err)
 			}
+			defer func() {
+				if err := ctx.DeleteConfigDir("", path); err != nil {
+					scopes.CI.Errorf("failed to delete directory: %v", err)
+				}
+			}()
 
 			// Now continue to watch on the same stream
 			err = p.WatchDiscovery(time.Second*10,
@@ -87,27 +93,14 @@ func TestSidecarListeners(t *testing.T) {
 }
 
 func validateListenersNoConfig(t *testing.T, response *structpath.Instance) {
-	t.Run("iptables-listener-block-loops", func(t *testing.T) {
-		response.
-			Select("{.resources[?(@.address.socketAddress.portValue==15001)]}").
-			Equals("virtualOutbound", "{.name}").
-			Equals("0.0.0.0", "{.address.socketAddress.address}").
-			Equals("envoy.tcp_proxy", "{.filterChains[0].filters[0].name}").
-			Equals("BlackHoleCluster", "{.filterChains[0].filters[0].typedConfig.cluster}").
-			Equals("10.2.0.1", "{.filterChains[0].filterChainMatch.prefixRanges[0].addressPrefix}").
-			Equals("32", "{.filterChains[0].filterChainMatch.prefixRanges[0].prefixLen}").
-			Equals(true, "{.useOriginalDst}").
-			CheckOrFail(t)
-	})
-
 	t.Run("iptables-forwarding-listener", func(t *testing.T) {
 		response.
 			Select("{.resources[?(@.address.socketAddress.portValue==15001)]}").
 			Equals("virtualOutbound", "{.name}").
 			Equals("0.0.0.0", "{.address.socketAddress.address}").
-			Equals("envoy.tcp_proxy", "{.filterChains[1].filters[0].name}").
-			Equals("PassthroughCluster", "{.filterChains[1].filters[0].typedConfig.cluster}").
-			Equals("PassthroughCluster", "{.filterChains[1].filters[0].typedConfig.statPrefix}").
+			Equals("envoy.tcp_proxy", "{.filterChains[0].filters[0].name}").
+			Equals("PassthroughCluster", "{.filterChains[0].filters[0].typedConfig.cluster}").
+			Equals("PassthroughCluster", "{.filterChains[0].filters[0].typedConfig.statPrefix}").
 			Equals(true, "{.useOriginalDst}").
 			CheckOrFail(t)
 	})
@@ -129,7 +122,8 @@ func validateMongoListener(t *testing.T, response *structpath.Instance) {
 			}, "{.address.socketAddress}").
 			Select("{.filterChains[0].filters[0]}").
 			Equals("envoy.mongo_proxy", "{.name}").
-			Select("{.config}").
-			Exists("{.stat_prefix}")
+			Select("{.typedConfig}").
+			Exists("{.statPrefix}").
+			CheckOrFail(t)
 	})
 }

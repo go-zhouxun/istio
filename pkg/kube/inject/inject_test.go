@@ -18,35 +18,27 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gogo/protobuf/types"
+	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
 
 	meshapi "istio.io/api/mesh/v1alpha1"
-
 	"istio.io/istio/pilot/test/util"
+	"istio.io/istio/pkg/config/constants"
 	"istio.io/istio/pkg/config/mesh"
-
-	corev1 "k8s.io/api/core/v1"
-)
-
-const (
-	statusReplacement = "sidecar.istio.io/status: '{\"version\":\"\","
-)
-
-var (
-	statusPattern = regexp.MustCompile("sidecar.istio.io/status: '{\"version\":\"([0-9a-f]+)\",")
 )
 
 func TestIntoResourceFile(t *testing.T) {
 	cases := []struct {
-		in     string
-		want   string
-		values string
-		mesh   func(m *meshapi.MeshConfig)
+		in         string
+		want       string
+		setFlags   []string
+		inFilePath string
+		mesh       func(m *meshapi.MeshConfig)
 	}{
 		//"testdata/hello.yaml" is tested in http_test.go (with debug)
 		{
@@ -55,18 +47,9 @@ func TestIntoResourceFile(t *testing.T) {
 		},
 		// verify cni
 		{
-			in:   "hello.yaml",
-			want: "hello.yaml.cni.injected",
-			values: `
-components:
-  cni:
-    enabled: true
-`,
-		},
-		//verifies that the sidecar will not be injected again for an injected yaml
-		{
-			in:   "hello.yaml.injected",
-			want: "hello.yaml.injected",
+			in:       "hello.yaml",
+			want:     "hello.yaml.cni.injected",
+			setFlags: []string{"components.cni.enabled=true"},
 		},
 		{
 			in:   "hello-mtls-not-ready.yaml",
@@ -104,22 +87,14 @@ components:
 			want: "hello-multi.yaml.injected",
 		},
 		{
-			in:   "hello.yaml",
-			want: "hello-always.yaml.injected",
-			values: `
-values:
-  global:
-    imagePullPolicy: Always
-`,
+			in:       "hello.yaml",
+			want:     "hello-always.yaml.injected",
+			setFlags: []string{"values.global.imagePullPolicy=Always"},
 		},
 		{
-			in:   "hello.yaml",
-			want: "hello-never.yaml.injected",
-			values: `
-values:
-  global:
-    imagePullPolicy: Never
-`,
+			in:       "hello.yaml",
+			want:     "hello-never.yaml.injected",
+			setFlags: []string{"values.global.imagePullPolicy=Never"},
 		},
 		{
 			in:   "hello-ignore.yaml",
@@ -134,14 +109,9 @@ values:
 			want: "statefulset.yaml.injected",
 		},
 		{
-			in:   "enable-core-dump.yaml",
-			want: "enable-core-dump.yaml.injected",
-			values: `
-values:
-  global:
-    proxy:
-      enableCoreDump: true
-`,
+			in:       "enable-core-dump.yaml",
+			want:     "enable-core-dump.yaml.injected",
+			setFlags: []string{"values.global.proxy.enableCoreDump=true"},
 		},
 		{
 			in:   "enable-core-dump-annotation.yaml",
@@ -207,25 +177,20 @@ values:
 			in:   "format-duration.yaml",
 			want: "format-duration.yaml.injected",
 			mesh: func(m *meshapi.MeshConfig) {
-				m.DefaultConfig.DrainDuration = types.DurationProto(time.Second * 42)
+				m.DefaultConfig.DrainDuration = types.DurationProto(time.Second * 23)
 				m.DefaultConfig.ParentShutdownDuration = types.DurationProto(time.Second * 42)
-				m.DefaultConfig.ConnectTimeout = types.DurationProto(time.Second * 42)
 			},
 		},
 		{
 			// Verifies that parameters are applied properly when no annotations are provided.
 			in:   "traffic-params.yaml",
 			want: "traffic-params.yaml.injected",
-			values: `
-values:
-  global:
-    proxy:
-      includeIPRanges: "127.0.0.1/24,10.96.0.1/24"
-      excludeIPRanges: "10.96.0.2/24,10.96.0.3/24"
-      includeInboundPorts: "1,2,3"
-      excludeInboundPorts: "4,5,6"
-      statusPort: 0
-  `,
+			setFlags: []string{
+				`values.global.proxy.includeIPRanges=127.0.0.1/24,10.96.0.1/24`,
+				`values.global.proxy.excludeIPRanges=10.96.0.2/24,10.96.0.3/24`,
+				`values.global.proxy.excludeInboundPorts=4,5,6`,
+				`values.global.proxy.statusPort=0`,
+			},
 		},
 		{
 			// Verifies that empty include lists are applied properly from parameters.
@@ -257,15 +222,12 @@ values:
 			// Verifies that the status params behave properly.
 			in:   "status_params.yaml",
 			want: "status_params.yaml.injected",
-			values: `
-values:
-  global:
-    proxy:
-      statusPort: 123
-      readinessInitialDelaySeconds: 100
-      readinessPeriodSeconds: 200
-      readinessFailureThreshold: 300
-  `,
+			setFlags: []string{
+				`values.global.proxy.statusPort=123`,
+				`values.global.proxy.readinessInitialDelaySeconds=100`,
+				`values.global.proxy.readinessPeriodSeconds=200`,
+				`values.global.proxy.readinessFailureThreshold=300`,
+			},
 		},
 		{
 			// Verifies that the status annotations override the params.
@@ -276,15 +238,12 @@ values:
 			// Verifies that the kubevirtInterfaces list are applied properly from parameters..
 			in:   "kubevirtInterfaces.yaml",
 			want: "kubevirtInterfaces.yaml.injected",
-			values: `
-values:
-  global:
-    proxy:
-      statusPort: 123
-      readinessInitialDelaySeconds: 100
-      readinessPeriodSeconds: 200
-      readinessFailureThreshold: 300
-  `,
+			setFlags: []string{
+				`values.global.proxy.statusPort=123`,
+				`values.global.proxy.readinessInitialDelaySeconds=100`,
+				`values.global.proxy.readinessPeriodSeconds=200`,
+				`values.global.proxy.readinessFailureThreshold=300`,
+			},
 		},
 		{
 			// Verifies that the kubevirtInterfaces list are applied properly from parameters..
@@ -293,15 +252,15 @@ values:
 		},
 		{
 			// Verifies that global.podDNSSearchNamespaces are applied properly
-			in:   "hello.yaml",
-			want: "hello-template-in-values.yaml.injected",
-			values: `
-values:
-  global:
-    podDNSSearchNamespaces:
-    - "global"
-    - "{{ valueOrDefault .DeploymentMeta.Namespace \"default\" }}.global"
-  `,
+			in:         "hello.yaml",
+			want:       "hello-template-in-values.yaml.injected",
+			inFilePath: "hello-template-in-values-iop.yaml",
+		},
+		{
+			// Verifies that global.mountMtlsCerts is applied properly
+			in:       "hello.yaml",
+			want:     "hello-mount-mtls-certs.yaml.injected",
+			setFlags: []string{`values.global.mountMtlsCerts=true`},
 		},
 	}
 
@@ -311,7 +270,10 @@ values:
 		t.Run(testName, func(t *testing.T) {
 			t.Parallel()
 			m := mesh.DefaultMeshConfig()
-			sidecarTemplate, valuesConfig := loadInjectionConfigMap(t, c.values)
+			if c.mesh != nil {
+				c.mesh(&m)
+			}
+			sidecarTemplate, valuesConfig := loadInjectionConfigMap(t, c.setFlags, c.inFilePath)
 			inputFilePath := "testdata/inject/" + c.in
 			wantFilePath := "testdata/inject/" + c.want
 			in, err := os.Open(inputFilePath)
@@ -320,7 +282,7 @@ values:
 			}
 			defer func() { _ = in.Close() }()
 			var got bytes.Buffer
-			if err = IntoResourceFile(sidecarTemplate.Template, valuesConfig, &m, in, &got); err != nil {
+			if err = IntoResourceFile(sidecarTemplate.Template, valuesConfig, "", &m, in, &got); err != nil {
 				t.Fatalf("IntoResourceFile(%v) returned an error: %v", inputFilePath, err)
 			}
 
@@ -328,8 +290,8 @@ values:
 			gotBytes := got.Bytes()
 			wantedBytes := util.ReadGoldenFile(gotBytes, wantFilePath, t)
 
-			wantBytes := stripVersion(wantedBytes)
-			gotBytes = stripVersion(gotBytes)
+			wantBytes := util.StripVersion(wantedBytes)
+			gotBytes = util.StripVersion(gotBytes)
 
 			util.CompareBytes(gotBytes, wantBytes, wantFilePath, t)
 
@@ -384,12 +346,12 @@ func TestRewriteAppProbe(t *testing.T) {
 		},
 		{
 			in:                  "hello-probes-with-flag-set-in-annotation.yaml",
-			rewriteAppHTTPProbe: false,
+			rewriteAppHTTPProbe: true,
 			want:                "hello-probes-with-flag-set-in-annotation.yaml.injected",
 		},
 		{
 			in:                  "hello-probes-with-flag-unset-in-annotation.yaml",
-			rewriteAppHTTPProbe: true,
+			rewriteAppHTTPProbe: false,
 			want:                "hello-probes-with-flag-unset-in-annotation.yaml.injected",
 		},
 		{
@@ -405,7 +367,7 @@ func TestRewriteAppProbe(t *testing.T) {
 		testName := fmt.Sprintf("[%02d] %s", i, c.want)
 		t.Run(testName, func(t *testing.T) {
 			m := mesh.DefaultMeshConfig()
-			sidecarTemplate, valuesConfig := loadInjectionConfigMap(t, "")
+			sidecarTemplate, valuesConfig := loadInjectionConfigMap(t, nil, "")
 			inputFilePath := "testdata/inject/app_probe/" + c.in
 			wantFilePath := "testdata/inject/app_probe/" + c.want
 			in, err := os.Open(inputFilePath)
@@ -414,24 +376,20 @@ func TestRewriteAppProbe(t *testing.T) {
 			}
 			defer func() { _ = in.Close() }()
 			var got bytes.Buffer
-			if err = IntoResourceFile(sidecarTemplate.Template, valuesConfig, &m, in, &got); err != nil {
+			if err = IntoResourceFile(sidecarTemplate.Template, valuesConfig, "", &m, in, &got); err != nil {
 				t.Fatalf("IntoResourceFile(%v) returned an error: %v", inputFilePath, err)
 			}
 
 			// The version string is a maintenance pain for this test. Strip the version string before comparing.
 			gotBytes := got.Bytes()
-			wantedBytes := util.ReadGoldenFile(gotBytes, wantFilePath, t)
+			gotBytes = util.StripVersion(gotBytes)
 
-			wantBytes := stripVersion(wantedBytes)
-			gotBytes = stripVersion(gotBytes)
+			wantedBytes := util.ReadGoldenFile(gotBytes, wantFilePath, t)
+			wantBytes := util.StripVersion(wantedBytes)
 
 			util.CompareBytes(gotBytes, wantBytes, wantFilePath, t)
 		})
 	}
-}
-
-func stripVersion(yaml []byte) []byte {
-	return statusPattern.ReplaceAllLiteral(yaml, []byte(statusReplacement))
 }
 
 func TestInvalidAnnotations(t *testing.T) {
@@ -463,7 +421,7 @@ func TestInvalidAnnotations(t *testing.T) {
 	m := mesh.DefaultMeshConfig()
 	for _, c := range cases {
 		t.Run(c.annotation, func(t *testing.T) {
-			sidecarTemplate, valuesConfig := loadInjectionConfigMap(t, "")
+			sidecarTemplate, valuesConfig := loadInjectionConfigMap(t, nil, "")
 			inputFilePath := "testdata/inject/" + c.in
 			in, err := os.Open(inputFilePath)
 			if err != nil {
@@ -471,7 +429,7 @@ func TestInvalidAnnotations(t *testing.T) {
 			}
 			defer func() { _ = in.Close() }()
 			var got bytes.Buffer
-			if err = IntoResourceFile(sidecarTemplate.Template, valuesConfig, &m, in, &got); err == nil {
+			if err = IntoResourceFile(sidecarTemplate.Template, valuesConfig, "", &m, in, &got); err == nil {
 				t.Fatalf("expected error")
 			} else if !strings.Contains(strings.ToLower(err.Error()), c.annotation) {
 				t.Fatalf("unexpected error: %v", err)
@@ -557,5 +515,53 @@ func TestSkipUDPPorts(t *testing.T) {
 				t.Fatalf("unexpect ports result for case %d: expect %v, got %v", i, expectPorts, ports)
 			}
 		}
+	}
+}
+
+func TestCleanProxyConfig(t *testing.T) {
+	overrides := mesh.DefaultProxyConfig()
+	overrides.ConfigPath = "/foo/bar"
+	overrides.DrainDuration = types.DurationProto(7 * time.Second)
+	overrides.ProxyMetadata = map[string]string{
+		"foo": "barr",
+	}
+	explicit := mesh.DefaultProxyConfig()
+	explicit.ConfigPath = constants.ConfigPathDir
+	explicit.DrainDuration = types.DurationProto(45 * time.Second)
+	cases := []struct {
+		name   string
+		proxy  meshapi.ProxyConfig
+		expect string
+	}{
+		{
+			"default",
+			mesh.DefaultProxyConfig(),
+			`{}`,
+		},
+		{
+			"explicit default",
+			explicit,
+			`{}`,
+		},
+		{
+			"overrides",
+			overrides,
+			`{"configPath":"/foo/bar","drainDuration":"7s","proxyMetadata":{"foo":"barr"}}`,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := protoToJSON(&tt.proxy)
+			if got != tt.expect {
+				t.Fatalf("incorrect output: got %v, expected %v", got, tt.expect)
+			}
+			roundTrip, err := mesh.ApplyProxyConfig(got, mesh.DefaultMeshConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !cmp.Equal(*roundTrip.GetDefaultConfig(), tt.proxy) {
+				t.Fatalf("round trip is not identical: got \n%+v, expected \n%+v", *roundTrip.GetDefaultConfig(), tt.proxy)
+			}
+		})
 	}
 }

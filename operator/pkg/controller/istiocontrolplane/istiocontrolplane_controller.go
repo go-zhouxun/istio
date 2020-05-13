@@ -17,6 +17,7 @@ package istiocontrolplane
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -24,8 +25,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -35,9 +36,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	iop "istio.io/istio/operator/pkg/apis/istio/v1alpha1"
-	"istio.io/istio/operator/pkg/helmreconciler"
+	"istio.io/api/operator/v1alpha1"
 	"istio.io/pkg/log"
+	"istio.io/pkg/version"
+
+	"istio.io/istio/operator/pkg/apis/istio"
+	iopv1alpha1 "istio.io/istio/operator/pkg/apis/istio/v1alpha1"
+	"istio.io/istio/operator/pkg/helm"
+	"istio.io/istio/operator/pkg/helmreconciler"
+	"istio.io/istio/operator/pkg/tpath"
+	"istio.io/istio/operator/pkg/translate"
+	"istio.io/istio/operator/pkg/util"
 )
 
 const (
@@ -46,55 +55,96 @@ const (
 	finalizerMaxRetries = 1
 )
 
-/**
-* USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
-* business logic.  Delete these comments after modifying this file.*
- */
-
-// Add creates a new IstioOperator Controller and adds it to the Manager. The Manager will set fields on the Controller
-// and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
-	return add(mgr, newReconciler(mgr))
-}
-
-// newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	factory := &helmreconciler.Factory{CustomizerFactory: &IstioRenderingCustomizerFactory{}}
-	return &ReconcileIstioOperator{client: mgr.GetClient(), scheme: mgr.GetScheme(), factory: factory}
-}
-
-// add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
-	log.Info("Adding controller for IstioOperator")
-	// Create a new controller
-	c, err := controller.New("istiocontrolplane-controller", mgr, controller.Options{Reconciler: r})
-	if err != nil {
-		return err
+var (
+	// watchedResources contains all resources we will watch and reconcile when changed
+	// Ideally this would also contain Istio CRDs, but there is a race condition here - we cannot watch
+	// a type that does not yet exist.
+	watchedResources = []schema.GroupVersionKind{
+		{Group: "autoscaling", Version: "v2beta1", Kind: "HorizontalPodAutoscaler"},
+		{Group: "policy", Version: "v1beta1", Kind: "PodDisruptionBudget"},
+		{Group: "apps", Version: "v1", Kind: "StatefulSet"},
+		{Group: "apps", Version: "v1", Kind: "Deployment"},
+		{Group: "apps", Version: "v1", Kind: "DaemonSet"},
+		{Group: "extensions", Version: "v1beta1", Kind: "Ingress"},
+		{Group: "", Version: "v1", Kind: "Service"},
+		// {Group: "", Version: "v1", Kind: "Endpoints"},
+		{Group: "", Version: "v1", Kind: "ConfigMap"},
+		{Group: "", Version: "v1", Kind: "PersistentVolumeClaim"},
+		{Group: "", Version: "v1", Kind: "Pod"},
+		{Group: "", Version: "v1", Kind: "Secret"},
+		{Group: "", Version: "v1", Kind: "ServiceAccount"},
+		{Group: "rbac.authorization.k8s.io", Version: "v1beta1", Kind: "RoleBinding"},
+		{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "RoleBinding"},
+		{Group: "rbac.authorization.k8s.io", Version: "v1beta1", Kind: "Role"},
+		{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "Role"},
+		{Group: "admissionregistration.k8s.io", Version: "v1beta1", Kind: "MutatingWebhookConfiguration"},
+		{Group: "admissionregistration.k8s.io", Version: "v1beta1", Kind: "ValidatingWebhookConfiguration"},
+		{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole"},
+		{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"},
+		{Group: "apiextensions.k8s.io", Version: "v1beta1", Kind: "CustomResourceDefinition"},
 	}
 
-	// Watch for changes to primary resource IstioOperator
-	err = c.Watch(&source.Kind{Type: &iop.IstioOperator{}}, &handler.EnqueueRequestForObject{})
-	if err != nil {
-		return err
+	ownedResourcePredicates = predicate.Funcs{
+		CreateFunc: func(_ event.CreateEvent) bool {
+			// no action
+			return false
+		},
+		GenericFunc: func(_ event.GenericEvent) bool {
+			// no action
+			return false
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			object, err := meta.Accessor(e.Object)
+			log.Debugf("got delete event for %s.%s", object.GetName(), object.GetNamespace())
+			if err != nil {
+				return false
+			}
+			if object.GetLabels()[helmreconciler.OwningResourceName] != "" && object.GetLabels()[helmreconciler.OwningResourceNamespace] != "" {
+				return true
+			}
+			return false
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			// no action
+			return false
+		},
 	}
-	//watch for changes to Istio resources
-	err = watchIstioResources(c)
-	if err != nil {
-		return err
-	}
-	log.Info("Controller added")
-	return nil
-}
 
-var _ reconcile.Reconciler = &ReconcileIstioOperator{}
+	operatorPredicates = predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return true
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return true
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldIOP, ok := e.ObjectOld.(*iopv1alpha1.IstioOperator)
+			if !ok {
+				log.Error("failed to get old IstioOperator")
+				return false
+			}
+			newIOP := e.ObjectNew.(*iopv1alpha1.IstioOperator)
+			if !ok {
+				log.Error("failed to get new IstioOperator")
+				return false
+			}
+			if !reflect.DeepEqual(oldIOP.Spec, newIOP.Spec) ||
+				oldIOP.GetDeletionTimestamp() != newIOP.GetDeletionTimestamp() ||
+				oldIOP.GetGeneration() != newIOP.GetGeneration() {
+				return true
+			}
+			return false
+		},
+	}
+)
 
 // ReconcileIstioOperator reconciles a IstioOperator object
 type ReconcileIstioOperator struct {
 	// This client, initialized using mgr.Client() above, is a split client
 	// that reads objects from the cache and writes to the apiserver
-	client  client.Client
-	scheme  *runtime.Scheme
-	factory *helmreconciler.Factory
+	client client.Client
+	config *rest.Config
+	scheme *runtime.Scheme
 }
 
 // Reconcile reads that state of the cluster for a IstioOperator object and makes changes based on the state read
@@ -106,17 +156,12 @@ func (r *ReconcileIstioOperator) Reconcile(request reconcile.Request) (reconcile
 	log.Info("Reconciling IstioOperator")
 
 	ns := request.Namespace
-	if ns == "" {
-		ns = defaultNs
-	} else {
-		defaultNs = ns
-	}
 	reqNamespacedName := types.NamespacedName{
 		Name:      request.Name,
 		Namespace: ns,
 	}
 	// declare read-only iop instance to create the reconciler
-	iop := &iop.IstioOperator{}
+	iop := &iopv1alpha1.IstioOperator{}
 	if err := r.client.Get(context.TODO(), reqNamespacedName, iop); err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
@@ -138,18 +183,13 @@ func (r *ReconcileIstioOperator) Reconcile(request reconcile.Request) (reconcile
 		}
 		log.Info("Deleting IstioOperator")
 
-		reconciler, err := r.factory.New(iop, r.client)
+		reconciler, err := helmreconciler.NewHelmReconciler(r.client, r.config, iop, nil)
 		if err != nil {
-			log.Errorf("failed to create reconciler: %s", err)
 			return reconcile.Result{}, err
 		}
-
-		err = reconciler.Delete()
-		if err != nil {
-			log.Errorf("failed to remove owned resources: %s", err)
+		if err := reconciler.Delete(); err != nil {
 			return reconcile.Result{}, err
 		}
-
 		finalizers.Delete(finalizer)
 		iop.SetFinalizers(finalizers.List())
 		finalizerError := r.client.Update(context.TODO(), iop)
@@ -174,7 +214,7 @@ func (r *ReconcileIstioOperator) Reconcile(request reconcile.Request) (reconcile
 			log.Errorf("error removing finalizer: %s", finalizerError)
 			return reconcile.Result{}, finalizerError
 		}
-		return reconcile.Result{}, err
+		return reconcile.Result{}, nil
 	} else if !finalizers.Has(finalizer) {
 		log.Infof("Adding finalizer %v to %v", finalizer, request)
 		finalizers.Insert(finalizer)
@@ -195,80 +235,127 @@ func (r *ReconcileIstioOperator) Reconcile(request reconcile.Request) (reconcile
 
 	log.Info("Updating IstioOperator")
 	var err error
-	iopMerged := *iop
-	iopMerged.Spec, err = helmreconciler.MergeIOPSWithProfile(iop.Spec)
+	iopMerged := &iopv1alpha1.IstioOperator{}
+	*iopMerged = *iop
+	iopMerged.Spec, err = mergeIOPSWithProfile(iopMerged)
+
+	if err != nil {
+		log.Errorf("failed to generate IstioOperator spec, %v", err)
+		return reconcile.Result{}, err
+	}
+
+	if _, ok := iopMerged.Spec.Values["global"]; !ok {
+		iopMerged.Spec.Values["global"] = make(map[string]interface{})
+	}
+	globalValues := iopMerged.Spec.Values["global"].(map[string]interface{})
+	log.Info("Detecting third-party JWT support")
+	var jwtPolicy util.JWTPolicy
+	if jwtPolicy, err = util.DetectSupportedJWTPolicy(r.config); err != nil {
+		log.Warnf("Failed to detect third-party JWT support: %v", err)
+	} else {
+		if jwtPolicy == util.FirstPartyJWT {
+			// nolint: lll
+			log.Info("Detected that your cluster does not support third party JWT authentication. " +
+				"Falling back to less secure first party JWT. See https://istio.io/docs/ops/best-practices/security/#configure-third-party-service-account-tokens for details.")
+		}
+		globalValues["jwtPolicy"] = string(jwtPolicy)
+	}
+	reconciler, err := helmreconciler.NewHelmReconciler(r.client, r.config, iopMerged, nil)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	reconciler, err := r.getOrCreateReconciler(&iopMerged)
-	if err == nil {
-		err = reconciler.Reconcile()
-		if err != nil {
-			log.Errorf("reconciling err: %s", err)
-		}
-	} else {
-		log.Errorf("failed to create reconciler: %s", err)
+	if err := reconciler.SetStatusBegin(); err != nil {
+		return reconcile.Result{}, err
+	}
+	status, err := reconciler.Reconcile()
+	if err != nil {
+		log.Errorf("reconciling err: %s", err)
+	}
+	if err := reconciler.SetStatusComplete(status); err != nil {
+		return reconcile.Result{}, err
 	}
 
 	return reconcile.Result{}, err
 }
 
-var (
-	defaultNs   string
-	reconcilers = map[string]*helmreconciler.HelmReconciler{}
-)
+// mergeIOPSWithProfile overlays the values in iop on top of the defaults for the profile given by iop.profile and
+// returns the merged result.
+func mergeIOPSWithProfile(iop *iopv1alpha1.IstioOperator) (*v1alpha1.IstioOperatorSpec, error) {
+	profileYAML, err := helm.GetProfileYAML(iop.Spec.InstallPackagePath, iop.Spec.Profile)
+	if err != nil {
+		return nil, err
+	}
 
-func reconcilersMapKey(iop *iop.IstioOperator) string {
-	return fmt.Sprintf("%s/%s", iop.Namespace, iop.Name)
-}
-
-var ownedResourcePredicates = predicate.Funcs{
-	CreateFunc: func(_ event.CreateEvent) bool {
-		// no action
-		return false
-	},
-	GenericFunc: func(_ event.GenericEvent) bool {
-		// no action
-		return false
-	},
-	DeleteFunc: func(e event.DeleteEvent) bool {
-		object, err := meta.Accessor(e.Object)
-		log.Debugf("got delete event for %s.%s", object.GetName(), object.GetNamespace())
+	// Due to the fact that base profile is compiled in before a tag can be created, we must allow an additional
+	// override from variables that are set during release build time.
+	hub := version.DockerInfo.Hub
+	tag := version.DockerInfo.Tag
+	if hub != "" && hub != "unknown" && tag != "" && tag != "unknown" {
+		buildHubTagOverlayYAML, err := helm.GenerateHubTagOverlay(hub, tag)
 		if err != nil {
-			return false
+			return nil, err
 		}
-		if object.GetLabels()[OwnerNameKey] != "" {
-			return true
+		profileYAML, err = util.OverlayYAML(profileYAML, buildHubTagOverlayYAML)
+		if err != nil {
+			return nil, err
 		}
-		return false
-	},
-	UpdateFunc: func(e event.UpdateEvent) bool {
-		// no action
-		return false
-	},
+	}
+
+	overlayYAML, err := util.MarshalWithJSONPB(iop)
+	if err != nil {
+		return nil, err
+	}
+	t := translate.NewReverseTranslator()
+	overlayYAML, err = t.TranslateK8SfromValueToIOP(overlayYAML)
+	if err != nil {
+		return nil, fmt.Errorf("could not overlay k8s settings from values to IOP: %s", err)
+	}
+
+	mergedYAML, err := util.OverlayYAML(profileYAML, overlayYAML)
+	if err != nil {
+		return nil, err
+	}
+
+	mergedYAML, err = translate.OverlayValuesEnablement(mergedYAML, overlayYAML, "")
+	if err != nil {
+		return nil, err
+	}
+
+	mergedYAMLSpec, err := tpath.GetSpecSubtree(mergedYAML)
+	if err != nil {
+		return nil, err
+	}
+
+	return istio.UnmarshalAndValidateIOPS(mergedYAMLSpec)
 }
 
-func (r *ReconcileIstioOperator) getOrCreateReconciler(iop *iop.IstioOperator) (*helmreconciler.HelmReconciler, error) {
-	key := reconcilersMapKey(iop)
-	var err error
-	var reconciler *helmreconciler.HelmReconciler
-	if reconciler, ok := reconcilers[key]; ok {
-		reconciler.SetNeedUpdateAndPrune(false)
-		oldInstance := reconciler.GetInstance()
-		reconciler.SetInstance(iop)
-		if reconciler.GetInstance() != oldInstance {
-			//regenerate the reconciler
-			if reconciler, err = r.factory.New(iop, r.client); err == nil {
-				reconcilers[key] = reconciler
-			}
-		}
-		return reconciler, err
+// Add creates a new IstioOperator Controller and adds it to the Manager. The Manager will set fields on the Controller
+// and Start it when the Manager is Started.
+func Add(mgr manager.Manager) error {
+	return add(mgr, &ReconcileIstioOperator{client: mgr.GetClient(), scheme: mgr.GetScheme(), config: mgr.GetConfig()})
+}
+
+// add adds a new Controller to mgr with r as the reconcile.Reconciler
+func add(mgr manager.Manager, r reconcile.Reconciler) error {
+	log.Info("Adding controller for IstioOperator")
+	// Create a new controller
+	c, err := controller.New("istiocontrolplane-controller", mgr, controller.Options{Reconciler: r})
+	if err != nil {
+		return err
 	}
-	//not found - generate the reconciler
-	if reconciler, err = r.factory.New(iop, r.client); err == nil {
-		reconcilers[key] = reconciler
+
+	// Watch for changes to primary resource IstioOperator
+	err = c.Watch(&source.Kind{Type: &iopv1alpha1.IstioOperator{}}, &handler.EnqueueRequestForObject{}, operatorPredicates)
+	if err != nil {
+		return err
 	}
-	return reconciler, err
+	//watch for changes to Istio resources
+	err = watchIstioResources(c)
+	if err != nil {
+		return err
+	}
+	log.Info("Controller added")
+	return nil
 }
 
 // Watch changes for Istio resources managed by the operator
@@ -282,10 +369,11 @@ func watchIstioResources(c controller.Controller) error {
 		})
 		err := c.Watch(&source.Kind{Type: u}, &handler.EnqueueRequestsFromMapFunc{
 			ToRequests: handler.ToRequestsFunc(func(a handler.MapObject) []reconcile.Request {
-				log.Debugf("watch a change for istio resource: %s.%s", a.Meta.GetName(), a.Meta.GetNamespace())
+				log.Infof("watch a change for istio resource: %s.%s", a.Meta.GetName(), a.Meta.GetNamespace())
 				return []reconcile.Request{
 					{NamespacedName: types.NamespacedName{
-						Name: a.Meta.GetLabels()[OwnerNameKey],
+						Name:      a.Meta.GetLabels()[helmreconciler.OwningResourceName],
+						Namespace: a.Meta.GetLabels()[helmreconciler.OwningResourceNamespace],
 					}},
 				}
 			}),

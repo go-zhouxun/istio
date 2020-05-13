@@ -23,13 +23,9 @@ import (
 
 	"istio.io/istio/operator/pkg/apis/istio/v1alpha1"
 	"istio.io/istio/operator/pkg/util"
-	"istio.io/istio/operator/pkg/version"
 )
 
 func TestValueToProto(t *testing.T) {
-	t.Skip("https://github.com/istio/istio/issues/20112")
-	// TODO port to new api
-
 	tests := []struct {
 		desc      string
 		valueYAML string
@@ -39,8 +35,6 @@ func TestValueToProto(t *testing.T) {
 		{
 			desc: "K8s resources translation",
 			valueYAML: `
-galley:
-  enabled: false
 pilot:
   enabled: true
   rollingMaxSurge: 100%
@@ -81,9 +75,6 @@ global:
   proxy:
     readinessInitialDelaySeconds: 2
   controlPlaneSecurityEnabled: false
-  mtls:
-    enabled:
-      false
 mixer:
   policy:
     enabled: true
@@ -95,28 +86,13 @@ mixer:
 			want: `
 hub: docker.io/istio
 tag: 1.2.3
-defaultNamespace: istio-system
-configManagement:
- components:
-   galley:
-     enabled: false
- enabled: false
-telemetry:
- components:
-   namespace: istio-telemetry
+components:
    telemetry:
      enabled: false
- enabled: false
-policy:
- components:
-   namespace: istio-policy
    policy:
      enabled: true
      k8s:
        replicaCount: 1
- enabled: true
-trafficManagement:
- components:
    pilot:
      enabled: true
      k8s:
@@ -152,16 +128,17 @@ trafficManagement:
          rollingUpdate:
            maxSurge: 100%
            maxUnavailable: 25%
- enabled: true
 values:
   global:
     controlPlaneSecurityEnabled: false
-    mtls:
-      enabled: false
+    istioNamespace: istio-system
     proxy:
       readinessInitialDelaySeconds: 2
+    policyNamespace: istio-policy
+    telemetryNamespace: istio-telemetry
   pilot:
     image: pilot
+    autoscaleEnabled: true
     traceSampling: 1
     podAntiAffinityLabelSelector:
     - key: istio
@@ -176,10 +153,6 @@ values:
 		{
 			desc: "All Enabled",
 			valueYAML: `
-certmanager:
-  enabled: true
-galley:
-  enabled: true
 global:
   hub: docker.io/istio
   istioNamespace: istio-system
@@ -205,71 +178,42 @@ gateways:
         cpu: 1000m
         memory: 1G
     enabled: true
-sidecarInjectorWebhook:
-  enabled: true
 `,
 			want: `
 hub: docker.io/istio
 tag: 1.2.3
-defaultNamespace: istio-system
-telemetry:
-  components:
-    namespace: istio-telemetry
-    telemetry:
+components:
+  telemetry:
+    enabled: true
+  policy:
+    enabled: true
+  pilot:
+    enabled: true
+  ingressGateways:
+  - name: istio-ingressgateway
+    enabled: true
+    k8s:
+      resources:
+        requests:
+          cpu: 1000m
+          memory: 1G
+      strategy:
+        rollingUpdate:
+          maxSurge: 4
+          maxUnavailable: 1
+addonComponents:
+   istiocoredns:
       enabled: true
-  enabled: true
-policy:
-  components:
-    namespace: istio-policy
-    policy:
-      enabled: true
-  enabled: true
-configManagement:
-  components:
-    galley:
-      enabled: true
-  enabled: true 
-security:
-  components:
-    certManager:
-      enabled: true
-  enabled: true
-coreDNS:
- components:
-   coreDNS:
-     enabled: true
- enabled: true
-trafficManagement:
-   components:
-     pilot:
-       enabled: true
-   enabled: true
-autoInjection:
-  components:
-    injector:
-      enabled: true
-  enabled: true
-gateways:
-  components:
-    ingressGateway:
-      enabled: true
-      k8s:
-        resources:
-          requests:
-            cpu: 1000m
-            memory: 1G
-        strategy:
-          rollingUpdate:
-            maxSurge: 4
-            maxUnavailable: 1
-  enabled: true
+values:
+  global:
+    policyNamespace: istio-policy
+    telemetryNamespace: istio-telemetry
+    istioNamespace: istio-system
 `,
 		},
 		{
 			desc: "Some components Disabled",
 			valueYAML: `
-galley:
-  enabled: false
 pilot:
   enabled: true
 global:
@@ -287,36 +231,22 @@ mixer:
 			want: `
 hub: docker.io/istio
 tag: 1.2.3
-defaultNamespace: istio-system
-telemetry:
- components:
-   namespace: istio-telemetry
+components:
    telemetry:
      enabled: false
- enabled: false
-policy:
- components:
-   namespace: istio-policy
    policy:
      enabled: true
- enabled: true
-configManagement:
- components:
-   galley:
-     enabled: false
- enabled: false
-trafficManagement:
- components:
    pilot:
      enabled: true
- enabled: true
+values:
+  global:
+    telemetryNamespace: istio-telemetry
+    policyNamespace: istio-policy
+    istioNamespace: istio-system
 `,
 		},
 	}
-	tr, err := NewReverseTranslator(version.NewMinorVersion(1, 4))
-	if err != nil {
-		t.Fatal("fail to get helm value.yaml translator")
-	}
+	tr := NewReverseTranslator()
 
 	for _, tt := range tests {
 		t.Run(tt.desc, func(t *testing.T) {
@@ -326,7 +256,7 @@ trafficManagement:
 				t.Fatalf("unmarshal(%s): got error %s", tt.desc, err)
 			}
 			scope.Debugf("value struct: \n%s\n", pretty.Sprint(valueStruct))
-			gotSpec, err := tr.TranslateFromValueToSpec([]byte(tt.valueYAML))
+			gotSpec, err := tr.TranslateFromValueToSpec([]byte(tt.valueYAML), false)
 			if gotErr, wantErr := errToString(err), tt.wantErr; gotErr != wantErr {
 				t.Errorf("ValuesToProto(%s)(%v): gotErr:%s, wantErr:%s", tt.desc, tt.valueYAML, gotErr, wantErr)
 			}
@@ -334,7 +264,7 @@ trafficManagement:
 				ms := jsonpb.Marshaler{}
 				gotString, err := ms.MarshalToString(gotSpec)
 				if err != nil {
-					t.Errorf("error when marshal translated IstioOperatorSpec: %s", err)
+					t.Errorf("failed to marshal translated IstioOperatorSpec: %s", err)
 				}
 				cpYaml, _ := yaml.JSONToYAML([]byte(gotString))
 				if want := tt.want; !util.IsYAMLEqual(gotString, want) {
@@ -346,37 +276,11 @@ trafficManagement:
 	}
 }
 
-func TestNewReverseTranslator(t *testing.T) {
-	tests := []struct {
-		name         string
-		minorVersion version.MinorVersion
-		wantVer      string
-		wantErr      bool
-	}{
-		{
-			name:         "version 1.4",
-			minorVersion: version.NewMinorVersion(1, 4),
-			wantVer:      "1.4",
-			wantErr:      false,
-		},
-		// TODO: implement 1.5 and fallback logic.
-		{
-			name:         "version 1.99",
-			minorVersion: version.NewMinorVersion(1, 99),
-			wantVer:      "",
-			wantErr:      true,
-		},
+// errToString returns the string representation of err and the empty string if
+// err is nil.
+func errToString(err error) string {
+	if err == nil {
+		return ""
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := NewReverseTranslator(tt.minorVersion)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("NewReverseTranslator() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != nil && tt.wantVer != got.Version.String() {
-				t.Errorf("NewReverseTranslator() got = %v, want %v", got.Version.String(), tt.wantVer)
-			}
-		})
-	}
+	return err.Error()
 }

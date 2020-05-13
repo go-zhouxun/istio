@@ -15,9 +15,50 @@
 package v1alpha1
 
 import (
+	"istio.io/api/operator/v1alpha1"
+
 	"github.com/golang/protobuf/jsonpb"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
+
+const (
+	globalKey         = "global"
+	istioNamespaceKey = "istioNamespace"
+)
+
+// Namespace returns the namespace of the containing CR.
+func Namespace(iops *v1alpha1.IstioOperatorSpec) string {
+	if iops.Namespace != "" {
+		return iops.Namespace
+	}
+	if iops.Values == nil {
+		return ""
+	}
+	if iops.Values[globalKey] == nil {
+		return ""
+	}
+	v := iops.Values[globalKey].(map[string]interface{})
+	n := v[istioNamespaceKey]
+	if n == nil {
+		return ""
+	}
+	return n.(string)
+}
+
+// SetNamespace returns the namespace of the containing CR.
+func SetNamespace(iops *v1alpha1.IstioOperatorSpec, namespace string) {
+	if namespace != "" {
+		iops.Namespace = namespace
+	}
+	if iops.Values == nil {
+		iops.Values = make(map[string]interface{})
+	}
+	if iops.Values[globalKey] == nil {
+		iops.Values[globalKey] = make(map[string]interface{})
+	}
+	v := iops.Values[globalKey].(map[string]interface{})
+	v[istioNamespaceKey] = namespace
+}
 
 // define new type from k8s intstr to marshal/unmarshal jsonpb
 type IntOrStringForPB struct {
@@ -32,14 +73,4 @@ func (intstrpb *IntOrStringForPB) MarshalJSONPB(_ *jsonpb.Marshaler) ([]byte, er
 // UnmarshalJSONPB implements the jsonpb.JSONPBUnmarshaler interface.
 func (intstrpb *IntOrStringForPB) UnmarshalJSONPB(_ *jsonpb.Unmarshaler, value []byte) error {
 	return intstrpb.UnmarshalJSON(value)
-}
-
-// FromInt creates an IntOrStringForPB object with an int32 value.
-func FromInt(val int) IntOrStringForPB {
-	return IntOrStringForPB{intstr.FromInt(val)}
-}
-
-// FromString creates an IntOrStringForPB object with a string value.
-func FromString(val string) IntOrStringForPB {
-	return IntOrStringForPB{intstr.FromString(val)}
 }

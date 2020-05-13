@@ -25,35 +25,39 @@ import (
 	http_conn "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
 	"github.com/golang/protobuf/ptypes/empty"
 
-	authn_alpha_api "istio.io/api/authentication/v1alpha1"
 	"istio.io/api/security/v1beta1"
+	"istio.io/pkg/log"
+
 	"istio.io/istio/pilot/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
-	"istio.io/istio/pilot/pkg/networking/plugin"
+	"istio.io/istio/pilot/pkg/networking"
 	"istio.io/istio/pilot/pkg/networking/util"
 	"istio.io/istio/pilot/pkg/security/authn"
-	alpha_applier "istio.io/istio/pilot/pkg/security/authn/v1alpha1"
+	authn_utils "istio.io/istio/pilot/pkg/security/authn/utils"
 	authn_model "istio.io/istio/pilot/pkg/security/model"
 	authn_alpha "istio.io/istio/security/proto/authentication/v1alpha1"
 	authn_filter "istio.io/istio/security/proto/envoy/config/filter/http/authn/v2alpha1"
-	"istio.io/pkg/log"
+)
+
+var (
+	authnLog = log.RegisterScope("authn", "authn debugging", 0)
 )
 
 // Implemenation of authn.PolicyApplier with v1beta1 API.
 type v1beta1PolicyApplier struct {
 	jwtPolicies []*model.Config
-	// TODO: add mTLS configs.
+
+	peerPolices []*model.Config
 
 	// processedJwtRules is the consolidate JWT rules from all jwtPolicies.
 	processedJwtRules []*v1beta1.JWTRule
 
-	alphaApplier authn.PolicyApplier
+	consolidatedPeerPolicy *v1beta1.PeerAuthentication
 }
 
 func (a *v1beta1PolicyApplier) JwtFilter() *http_conn.HttpFilter {
 	if len(a.processedJwtRules) == 0 {
-		log.Debugf("JwtFilter: RequestAuthentication (beta policy) not found, fallback to alpha if available")
-		return a.alphaApplier.JwtFilter()
+		return nil
 	}
 
 	filterConfigProto := convertToEnvoyJwtConfig(a.processedJwtRules)
@@ -67,26 +71,70 @@ func (a *v1beta1PolicyApplier) JwtFilter() *http_conn.HttpFilter {
 	}
 }
 
-// All explaining code link can be removed before merging.
-func convertToIstioAuthnFilterConfig(jwtRules []*v1beta1.JWTRule) *authn_filter.FilterConfig {
-	p := authn_alpha.Policy{
-		// Targets are not used in the authn filter.
-		// Origin will be optional since we don't reject req.
-		// Add Peers since we need that to trigger identity extraction in Authn filter.
-		Peers: []*authn_alpha.PeerAuthenticationMethod{
+func defaultAuthnFilter() *authn_filter.FilterConfig {
+	return &authn_filter.FilterConfig{
+		Policy: &authn_alpha.Policy{},
+		// we can always set this field, it's no-op if mTLS is not used.
+		SkipValidateTrustDomain: features.SkipValidateTrustDomain.Get(),
+	}
+}
+
+func (a *v1beta1PolicyApplier) setAuthnFilterForPeerAuthn(proxyType model.NodeType, port uint32, config *authn_filter.FilterConfig) *authn_filter.FilterConfig {
+	if proxyType != model.SidecarProxy {
+		authnLog.Debugf("AuthnFilter: skip setting peer for type %v", proxyType)
+		return config
+	}
+
+	if config == nil {
+		config = defaultAuthnFilter()
+	}
+	p := config.Policy
+	p.Peers = []*authn_alpha.PeerAuthenticationMethod{}
+
+	effectiveMTLSMode := a.getMutualTLSModeForPort(port)
+	if effectiveMTLSMode == model.MTLSPermissive || effectiveMTLSMode == model.MTLSStrict {
+		mode := authn_alpha.MutualTls_PERMISSIVE
+		if effectiveMTLSMode == model.MTLSStrict {
+			mode = authn_alpha.MutualTls_STRICT
+		}
+		p.Peers = []*authn_alpha.PeerAuthenticationMethod{
 			{
 				Params: &authn_alpha.PeerAuthenticationMethod_Mtls{
-					Mtls: &authn_alpha.MutualTls{},
+					Mtls: &authn_alpha.MutualTls{
+						Mode: mode,
+					},
 				},
 			},
-		},
-		OriginIsOptional: true,
-		PeerIsOptional:   true,
-		// Always bind request.auth.principal from JWT origin. In v2 policy, authorization config specifies what principal to
-		// choose from instead, rather than in authn config.
-		PrincipalBinding: authn_alpha.PrincipalBinding_USE_ORIGIN,
+		}
 	}
-	for _, jwt := range jwtRules {
+
+	return config
+}
+
+func (a *v1beta1PolicyApplier) setAuthnFilterForRequestAuthn(config *authn_filter.FilterConfig) *authn_filter.FilterConfig {
+	if len(a.processedJwtRules) == 0 {
+		// (beta) RequestAuthentication is not set for workload, do nothing.
+		authnLog.Debug("AuthnFilter: RequestAuthentication (beta policy) not found, keep settings with alpha API")
+		return config
+	}
+
+	if config == nil {
+		config = defaultAuthnFilter()
+	}
+
+	// This is obsoleted and not needed (payload is extracted from metadata). Reset the field to remove
+	// any artifacts from alpha applier.
+	config.JwtOutputPayloadLocations = nil
+	p := config.Policy
+	// Reset origins to use with beta API
+	p.Origins = []*authn_alpha.OriginAuthenticationMethod{}
+	// Always set to true for beta API, as it doesn't doe rejection on missing token.
+	p.OriginIsOptional = true
+
+	// Always bind request.auth.principal from JWT origin. In v2 policy, authorization config specifies what principal to
+	// choose from instead, rather than in authn config.
+	p.PrincipalBinding = authn_alpha.PrincipalBinding_USE_ORIGIN
+	for _, jwt := range a.processedJwtRules {
 		p.Origins = append(p.Origins, &authn_alpha.OriginAuthenticationMethod{
 			Jwt: &authn_alpha.Jwt{
 				// used for getting the filter data, and all other fields are irrelevant.
@@ -94,25 +142,21 @@ func convertToIstioAuthnFilterConfig(jwtRules []*v1beta1.JWTRule) *authn_filter.
 			},
 		})
 	}
-
-	return &authn_filter.FilterConfig{
-		Policy: &p,
-		// JwtOutputPayloadLocations is nil because now authn filter uses the issuer use the issuer as
-		// key in the jwt filter metadata to find the output.
-		SkipValidateTrustDomain: features.SkipValidateTrustDomain.Get(),
-	}
+	return config
 }
 
-// AuthNFilter returns the Istio authn filter config for a given authn Beta policy:
-// istio.authentication.v1alpha1.Policy policy, we specially constructs the old filter config to
-// ensure Authn Filter won't reject the request, but still transform the attributes, e.g. request.auth.principal.
-// proxyType does not matter here, exists only for legacy reason.
-func (a *v1beta1PolicyApplier) AuthNFilter(proxyType model.NodeType) *http_conn.HttpFilter {
-	if len(a.processedJwtRules) == 0 {
-		log.Debugf("AuthnFilter: RequestAuthentication (beta policy) not found, fallback to alpha if available")
-		return a.alphaApplier.AuthNFilter(proxyType)
-	}
-	filterConfigProto := convertToIstioAuthnFilterConfig(a.processedJwtRules)
+// AuthNFilter returns the Istio authn filter config:
+// - If PeerAuthentication is used, it overwrite the settings for peer principal validation and extraction based on the new API.
+// - If RequestAuthentication is used, it overwrite the settings for request principal validation and extraction based on the new API.
+// - If RequestAuthentication is used, principal binding is always set to ORIGIN.
+func (a *v1beta1PolicyApplier) AuthNFilter(proxyType model.NodeType, port uint32) *http_conn.HttpFilter {
+	var filterConfigProto *authn_filter.FilterConfig
+
+	// Override the config with peer authentication, if applicable.
+	filterConfigProto = a.setAuthnFilterForPeerAuthn(proxyType, port, filterConfigProto)
+	// Override the config with request authentication, if applicable.
+	filterConfigProto = a.setAuthnFilterForRequestAuthn(filterConfigProto)
+
 	if filterConfigProto == nil {
 		return nil
 	}
@@ -123,12 +167,17 @@ func (a *v1beta1PolicyApplier) AuthNFilter(proxyType model.NodeType) *http_conn.
 	}
 }
 
-func (a *v1beta1PolicyApplier) InboundFilterChain(sdsUdsPath string, node *model.Proxy) []plugin.FilterChain {
-	return a.alphaApplier.InboundFilterChain(sdsUdsPath, node)
+func (a *v1beta1PolicyApplier) InboundFilterChain(endpointPort uint32, sdsUdsPath string, node *model.Proxy,
+	listenerProtocol networking.ListenerProtocol) []networking.FilterChain {
+	effectiveMTLSMode := a.getMutualTLSModeForPort(endpointPort)
+	authnLog.Debugf("InboundFilterChain: build inbound filter change for %v:%d in %s mode", node.ID, endpointPort, effectiveMTLSMode)
+	return authn_utils.BuildInboundFilterChain(effectiveMTLSMode, sdsUdsPath, node, listenerProtocol)
 }
 
 // NewPolicyApplier returns new applier for v1beta1 authentication policies.
-func NewPolicyApplier(jwtPolicies []*model.Config, policy *authn_alpha_api.Policy) authn.PolicyApplier {
+func NewPolicyApplier(rootNamespace string,
+	jwtPolicies []*model.Config,
+	peerPolicies []*model.Config) authn.PolicyApplier {
 	processedJwtRules := []*v1beta1.JWTRule{}
 
 	// TODO(diemtvu) should we need to deduplicate JWT with the same issuer.
@@ -146,9 +195,10 @@ func NewPolicyApplier(jwtPolicies []*model.Config, policy *authn_alpha_api.Polic
 	})
 
 	return &v1beta1PolicyApplier{
-		jwtPolicies:       jwtPolicies,
-		processedJwtRules: processedJwtRules,
-		alphaApplier:      alpha_applier.NewPolicyApplier(policy),
+		jwtPolicies:            jwtPolicies,
+		peerPolices:            peerPolicies,
+		processedJwtRules:      processedJwtRules,
+		consolidatedPeerPolicy: composePeerAuthentication(rootNamespace, peerPolicies),
 	}
 }
 
@@ -280,4 +330,129 @@ func convertToEnvoyJwtConfig(jwtRules []*v1beta1.JWTRule) *envoy_jwt.JwtAuthenti
 		},
 		Providers: providers,
 	}
+}
+
+func (a *v1beta1PolicyApplier) getMutualTLSModeForPort(endpointPort uint32) model.MutualTLSMode {
+	if a.consolidatedPeerPolicy == nil {
+		return model.MTLSPermissive
+	}
+	if a.consolidatedPeerPolicy.PortLevelMtls != nil {
+		if portMtls, ok := a.consolidatedPeerPolicy.PortLevelMtls[endpointPort]; ok {
+			return getMutualTLSMode(portMtls)
+		}
+	}
+
+	return getMutualTLSMode(a.consolidatedPeerPolicy.Mtls)
+}
+
+// getMutualTLSMode returns the MutualTLSMode enum corresponding peer MutualTLS settings.
+// Input cannot be nil.
+func getMutualTLSMode(mtls *v1beta1.PeerAuthentication_MutualTLS) model.MutualTLSMode {
+	switch mtls.Mode {
+	case v1beta1.PeerAuthentication_MutualTLS_DISABLE:
+		return model.MTLSDisable
+	case v1beta1.PeerAuthentication_MutualTLS_PERMISSIVE:
+		return model.MTLSPermissive
+	case v1beta1.PeerAuthentication_MutualTLS_STRICT:
+		return model.MTLSStrict
+	default:
+		return model.MTLSUnknown
+	}
+}
+
+// composePeerAuthentication returns the effective PeerAuthentication given the list of applicable
+// configs. This list should contains at most 1 mesh-level and 1 namespace-level configs.
+// Workload-level configs should not be in root namespace (this should be guaranteed by the caller,
+// though they will be safely ignored in this function). If the input config list is empty, returns
+// nil which can be used to indicate no applicable (beta) policy exist in order to trigger fallback
+// to alpha policy. This can be simplified once we deprecate alpha policy.
+// If there is at least one applicable config, returns should be not nil, and is a combined policy
+// based on following rules:
+// - It should have the setting from the most narrow scope (i.e workload-level is  preferred over
+// namespace-level, which is preferred over mesh-level).
+// - When there are more than one policy in the same scope (i.e workload-level), the oldest one
+// win.
+// - UNSET will be replaced with the setting from the parrent. I.e UNSET port-level config will be
+// replaced with config from workload-level, UNSET in workload-level config will be replaced with
+// one in namespace-level and so on.
+func composePeerAuthentication(rootNamespace string, configs []*model.Config) *v1beta1.PeerAuthentication {
+	var meshCfg, namespaceCfg, workloadCfg *model.Config
+
+	for _, cfg := range configs {
+		spec := cfg.Spec.(*v1beta1.PeerAuthentication)
+		if spec.Selector == nil || len(spec.Selector.MatchLabels) == 0 {
+			// Namespace-level or mesh-level policy
+			if cfg.Namespace == rootNamespace {
+				if meshCfg == nil || cfg.CreationTimestamp.Before(meshCfg.CreationTimestamp) {
+					authnLog.Debugf("Switch selected mesh policy to %s.%s (%v)", cfg.Name, cfg.Namespace, cfg.CreationTimestamp)
+					meshCfg = cfg
+				}
+			} else {
+				if namespaceCfg == nil || cfg.CreationTimestamp.Before(namespaceCfg.CreationTimestamp) {
+					authnLog.Debugf("Switch selected namespace policy to %s.%s (%v)", cfg.Name, cfg.Namespace, cfg.CreationTimestamp)
+					namespaceCfg = cfg
+				}
+			}
+		} else if cfg.Namespace != rootNamespace {
+			// Workload level policy, aka the one with selector and not in root namespace.
+			if workloadCfg == nil || cfg.CreationTimestamp.Before(workloadCfg.CreationTimestamp) {
+				authnLog.Debugf("Switch selected workload policy to %s.%s (%v)", cfg.Name, cfg.Namespace, cfg.CreationTimestamp)
+				workloadCfg = cfg
+			}
+		}
+	}
+
+	if meshCfg == nil && namespaceCfg == nil && workloadCfg == nil {
+		// Return nil so that caller can fallback to apply alpha policy. Once we deprecate alpha API,
+		// this special case can be removed.
+		return nil
+	}
+
+	// Initial outputPolicy is set to a PERMISSIVE.
+	outputPolicy := v1beta1.PeerAuthentication{
+		Mtls: &v1beta1.PeerAuthentication_MutualTLS{
+			Mode: v1beta1.PeerAuthentication_MutualTLS_PERMISSIVE,
+		},
+	}
+
+	// Process in mesh, namespace, workload order to resolve inheritance (UNSET)
+
+	if meshCfg != nil && !isMtlsModeUnset(meshCfg.Spec.(*v1beta1.PeerAuthentication).Mtls) {
+		// If mesh policy is defined, update parentPolicy to mesh policy.
+		outputPolicy.Mtls = meshCfg.Spec.(*v1beta1.PeerAuthentication).Mtls
+	}
+
+	if namespaceCfg != nil && !isMtlsModeUnset(namespaceCfg.Spec.(*v1beta1.PeerAuthentication).Mtls) {
+		// If namespace policy is defined, update output policy to namespace policy. This means namespace
+		// policy overwrite mesh policy.
+		outputPolicy.Mtls = namespaceCfg.Spec.(*v1beta1.PeerAuthentication).Mtls
+	}
+
+	var workloadPolicy *v1beta1.PeerAuthentication
+	if workloadCfg != nil {
+		workloadPolicy = workloadCfg.Spec.(*v1beta1.PeerAuthentication)
+	}
+
+	if workloadPolicy != nil && !isMtlsModeUnset(workloadPolicy.Mtls) {
+		// If workload policy is defined, update parent policy to workload policy.
+		outputPolicy.Mtls = workloadPolicy.Mtls
+	}
+
+	if workloadPolicy != nil && workloadPolicy.PortLevelMtls != nil {
+		outputPolicy.PortLevelMtls = make(map[uint32]*v1beta1.PeerAuthentication_MutualTLS, len(workloadPolicy.PortLevelMtls))
+		for port, mtls := range workloadPolicy.PortLevelMtls {
+			if isMtlsModeUnset(mtls) {
+				// Inherit from workload level.
+				outputPolicy.PortLevelMtls[port] = outputPolicy.Mtls
+			} else {
+				outputPolicy.PortLevelMtls[port] = mtls
+			}
+		}
+	}
+
+	return &outputPolicy
+}
+
+func isMtlsModeUnset(mtls *v1beta1.PeerAuthentication_MutualTLS) bool {
+	return mtls == nil || mtls.Mode == v1beta1.PeerAuthentication_MutualTLS_UNSET
 }

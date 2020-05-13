@@ -22,6 +22,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 
+	"istio.io/istio/istioctl/pkg/clioptions"
 	"istio.io/istio/istioctl/pkg/kubernetes"
 	"istio.io/istio/pilot/test/util"
 	"istio.io/istio/security/pkg/nodeagent/sds"
@@ -47,12 +48,6 @@ type mockExecConfig struct {
 }
 
 func TestProxyConfig(t *testing.T) {
-	cannedConfig := map[string][]byte{
-		"details-v1-5b7f94f9bc-wp5tb": util.ReadFile("../pkg/writer/compare/testdata/envoyconfigdump.json", t),
-	}
-	endpointConfig := map[string][]byte{
-		"details-v1-5b7f94f9bc-wp5tb": util.ReadFile("../pkg/writer/envoy/clusters/testdata/clusters.json", t),
-	}
 	loggingConfig := map[string][]byte{
 		"details-v1-5b7f94f9bc-wp5tb": util.ReadFile("../pkg/writer/envoy/logging/testdata/logging.txt", t),
 	}
@@ -119,134 +114,10 @@ func TestProxyConfig(t *testing.T) {
 			expectedString: "unable to retrieve Pod: pods \"invalid\" not found",
 			wantException:  true, // "istioctl proxy-config secret invalid" should fail
 		},
-		{ // clusters valid
-			execClientConfig: cannedConfig,
-			args:             strings.Split("proxy-config clusters details-v1-5b7f94f9bc-wp5tb", " "),
-			expectedOutput: `SERVICE FQDN                                    PORT      SUBSET     DIRECTION     TYPE
-istio-policy.istio-system.svc.cluster.local     15004     -          outbound      EDS
-xds-grpc                                        -         -          -             STRICT_DNS
-`,
-		},
-		{ // listeners valid
-			execClientConfig: cannedConfig,
-			args:             strings.Split("proxy-config listeners details-v1-5b7f94f9bc-wp5tb", " "),
-			expectedOutput: `ADDRESS            PORT     TYPE
-172.21.134.116     443      TCP
-0.0.0.0            8080     HTTP
-`,
-		},
-		{ // routes valid
-			execClientConfig: cannedConfig,
-			args:             strings.Split("proxy-config routes details-v1-5b7f94f9bc-wp5tb", " "),
-			expectedOutput: `NOTE: This output only contains routes loaded via RDS.
-NAME                                                    VIRTUAL HOSTS
-15004                                                   2
-inbound|9080||productpage.default.svc.cluster.local     1
-`,
-		},
-		{ // secret valid
-			execClientConfig: cannedConfig,
-			args:             strings.Split("proxy-config secret details-v1-5b7f94f9bc-wp5tb", " "),
-			expectedOutput: `RESOURCE NAME     TYPE           STATUS      VALID CERT     SERIAL NUMBER                               NOT AFTER                NOT BEFORE
-default           Cert Chain     WARMING     true           102248101821513494474081488414108563796     2019-09-05T21:18:20Z     2019-09-04T21:18:20Z
-default           Cert Chain     ACTIVE      true           172326788211665918318952701714288464978     2019-08-28T17:19:57Z     2019-08-27T17:19:57Z
-`,
-		},
 		{ // endpoint invalid
 			args:           strings.Split("proxy-config endpoint invalid", " "),
 			expectedString: "unable to retrieve Pod: pods \"invalid\" not found",
 			wantException:  true, // "istioctl proxy-config endpoint invalid" should fail
-		},
-		{ // endpoint valid
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config endpoint details-v1-5b7f94f9bc-wp5tb --port=15014", " "),
-			expectedOutput: `ENDPOINT              STATUS        OUTLIER CHECK     CLUSTER
-172.17.0.14:15014     UNHEALTHY     OK                outbound|15014||istio-policy.istio-system.svc.cluster.local
-`,
-		},
-		{ // endpoint status filter
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config endpoint details-v1-5b7f94f9bc-wp5tb --status=unhealthy", " "),
-			expectedOutput: `ENDPOINT              STATUS        OUTLIER CHECK     CLUSTER
-172.17.0.14:15014     UNHEALTHY     OK                outbound|15014||istio-policy.istio-system.svc.cluster.local
-`,
-		},
-		{ // bootstrap no args
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config bootstrap", " "),
-			expectedString:   `Error: bootstrap requires pod name or --file parameter`,
-			wantException:    true,
-		},
-		{ // cluster no args
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config cluster", " "),
-			expectedString:   `Error: cluster requires pod name or --file parameter`,
-			wantException:    true,
-		},
-		{ // endpoint no args
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config endpoint", " "),
-			expectedString:   `Error: endpoints requires pod name or --file parameter`,
-			wantException:    true,
-		},
-		{ // listener no args
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config listener", " "),
-			expectedString:   `Error: listener requires pod name or --file parameter`,
-			wantException:    true,
-		},
-		{ // logging no args
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config log", " "),
-			expectedString:   `Error: log requires pod name`,
-			wantException:    true,
-		},
-		{ // route no args
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config route", " "),
-			expectedString:   `Error: route requires pod name or --file parameter`,
-			wantException:    true,
-		},
-		{ // secret no args
-			execClientConfig: endpointConfig,
-			args:             strings.Split("proxy-config secret", " "),
-			expectedString:   `Error: secret requires pod name or --file parameter`,
-			wantException:    true,
-		},
-		{ // clusters using --file
-			args: strings.Split("proxy-config clusters --file ../pkg/writer/compare/testdata/envoyconfigdump.json", " "),
-			expectedOutput: `SERVICE FQDN                                    PORT      SUBSET     DIRECTION     TYPE
-istio-policy.istio-system.svc.cluster.local     15004     -          outbound      EDS
-xds-grpc                                        -         -          -             STRICT_DNS
-`,
-		},
-		{ // listeners using --file
-			args: strings.Split("proxy-config listeners --file ../pkg/writer/compare/testdata/envoyconfigdump.json", " "),
-			expectedOutput: `ADDRESS            PORT     TYPE
-172.21.134.116     443      TCP
-0.0.0.0            8080     HTTP
-`,
-		},
-		{ // routes using --file
-			args: strings.Split("proxy-config routes --file ../pkg/writer/compare/testdata/envoyconfigdump.json", " "),
-			expectedOutput: `NOTE: This output only contains routes loaded via RDS.
-NAME                                                    VIRTUAL HOSTS
-15004                                                   2
-inbound|9080||productpage.default.svc.cluster.local     1
-`,
-		},
-		{ // secret using --file
-			args: strings.Split("proxy-config secret --file ../pkg/writer/compare/testdata/envoyconfigdump.json", " "),
-			expectedOutput: `RESOURCE NAME     TYPE           STATUS      VALID CERT     SERIAL NUMBER                               NOT AFTER                NOT BEFORE
-default           Cert Chain     WARMING     true           102248101821513494474081488414108563796     2019-09-05T21:18:20Z     2019-09-04T21:18:20Z
-default           Cert Chain     ACTIVE      true           172326788211665918318952701714288464978     2019-08-28T17:19:57Z     2019-08-27T17:19:57Z
-`,
-		},
-		{ // endpoint using --file
-			args: strings.Split("proxy-config endpoint --file ../pkg/writer/envoy/clusters/testdata/clusters.json --port=15014", " "),
-			expectedOutput: `ENDPOINT              STATUS        OUTLIER CHECK     CLUSTER
-172.17.0.14:15014     UNHEALTHY     OK                outbound|15014||istio-policy.istio-system.svc.cluster.local
-`,
 		},
 	}
 
@@ -262,6 +133,7 @@ func verifyExecTestOutput(t *testing.T, c execTestCase) {
 
 	// Override the exec client factory used by proxyconfig.go and proxystatus.go
 	clientExecFactory = mockClientExecFactoryGenerator(c.execClientConfig)
+	envoyClientFactory = mockEnvoyClientFactoryGenerator(c.execClientConfig)
 
 	var out bytes.Buffer
 	rootCmd := GetRootCmd(c.args)
@@ -296,7 +168,18 @@ func verifyExecTestOutput(t *testing.T, c execTestCase) {
 
 // mockClientExecFactoryGenerator generates a function with the same signature as
 // kubernetes.NewExecClient() that returns a mock client.
-func mockClientExecFactoryGenerator(testResults map[string][]byte) func(kubeconfig, configContext string) (kubernetes.ExecClient, error) {
+// nolint: lll
+func mockClientExecFactoryGenerator(testResults map[string][]byte) func(kubeconfig, configContext string, _ clioptions.ControlPlaneOptions) (kubernetes.ExecClient, error) {
+	outFactory := func(kubeconfig, configContext string, _ clioptions.ControlPlaneOptions) (kubernetes.ExecClient, error) {
+		return mockExecConfig{
+			results: testResults,
+		}, nil
+	}
+
+	return outFactory
+}
+
+func mockEnvoyClientFactoryGenerator(testResults map[string][]byte) func(kubeconfig, configContext string) (kubernetes.ExecClient, error) {
 	outFactory := func(kubeconfig, configContext string) (kubernetes.ExecClient, error) {
 		return mockExecConfig{
 			results: testResults,
@@ -307,7 +190,7 @@ func mockClientExecFactoryGenerator(testResults map[string][]byte) func(kubeconf
 }
 
 // nolint: unparam
-func (client mockExecConfig) AllPilotsDiscoveryDo(pilotNamespace, method, path string, body []byte) (map[string][]byte, error) {
+func (client mockExecConfig) AllPilotsDiscoveryDo(pilotNamespace, path string) (map[string][]byte, error) {
 	return client.results, nil
 }
 
@@ -320,14 +203,6 @@ func (client mockExecConfig) EnvoyDo(podName, podNamespace, method, path string,
 	return results, nil
 }
 
-// nolint: unparam
-func (client mockExecConfig) PilotDiscoveryDo(pilotNamespace, method, path string, body []byte) ([]byte, error) {
-	for _, results := range client.results {
-		return results, nil
-	}
-	return nil, fmt.Errorf("unable to find any Pilot instances")
-}
-
 func (client mockExecConfig) GetIstioVersions(namespace string) (*version.MeshInfo, error) {
 	return nil, nil
 }
@@ -336,7 +211,7 @@ func (client mockExecConfig) PodsForSelector(namespace, labelSelector string) (*
 	return &v1.PodList{}, nil
 }
 
-func (client mockExecConfig) BuildPortForwarder(podName string, ns string, localPort int, podPort int) (*kubernetes.PortForward, error) {
+func (client mockExecConfig) BuildPortForwarder(podName string, ns string, localAddr string, localPort int, podPort int) (*kubernetes.PortForward, error) {
 	return nil, fmt.Errorf("mock k8s does not forward")
 }
 

@@ -18,11 +18,11 @@ architecture and a code overview, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 The operator uses the [IstioOperator API](https://github.com/istio/api/blob/master/operator/v1alpha1/operator.proto), which has
 three main components:
 
-- [MeshConfig](https://github.com/istio/api/blob/master/mesh/v1alpha1/operator.proto) for runtime config consumed directly by Istio
+- [MeshConfig](https://github.com/istio/api/blob/master/mesh/v1alpha1/config.proto) for runtime config consumed directly by Istio
 control plane components.
 - [Component configuration API](https://github.com/istio/api/blob/master/operator/v1alpha1/component.proto), for managing
 K8s settings like resources, auto scaling, pod disruption budgets and others defined in the
-[KubernetesResourceSpec](https://github.com/istio/api/blob/master/blob/7791470ecc4c5e123589ff2b781f47b1bcae6ddd/operator/v1alpha1/component.proto)
+[KubernetesResourceSpec](https://github.com/istio/api/blob/master/operator/v1alpha1/component.proto)
 for Istio core and addon components.
 - The legacy
 [Helm installation API](https://istio.io/docs/reference/config/installation-options/) for backwards
@@ -40,7 +40,7 @@ an Istio install and can be customized by creating customization overlay files o
 ```yaml
 # sds.yaml
 
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   profile: sds
@@ -88,7 +88,7 @@ Ensure the created binary is in your PATH to run the examples below.
 Building a custom controller requires a Dockerhub (or similar) account. To build using the container based build:
 
 ```bash
-HUB=docker.io/<your-account> TAG=latest make docker.all
+HUB=docker.io/<your-account> TAG=latest make docker.operator
 ```
 
 This builds the controller binary and docker file, and pushes the image to the specified hub with the `latest` tag.
@@ -102,7 +102,8 @@ the file deploy/operator.yaml to point to your docker hub:
 Install the controller manifest and example IstioOperator CR:
 
 ```bash
-istioctl operator init
+istioctl operator init --hub docker.io/<your-account> --tag latest
+kubectl create ns istio-system
 kubectl apply -f operator/deploy/crds/istio_v1alpha1_istiooperator_cr.yaml
 ```
 
@@ -118,13 +119,20 @@ the Istio control plane into the istio-system namespace by default.
 
 #### Controller (running locally)
 
-1. Set env $WATCH_NAMESPACE and $LEADER_ELECTION_NAMESPACE (default value is "istio-operator")
+1. Set env $WATCH_NAMESPACE (default value is "istio-system") and $LEADER_ELECTION_NAMESPACE (default value is "istio-operator")
 
-1. From the operator repo root directory, run `go run ./cmd/manager/*.go server`
+1. Create the `WATCH_NAMESPACE` and `LEADER_ELECTION_NAMESPACE` if they are not created yet.
+
+```bash
+kubectl create ns $WATCH_NAMESPACE --dry-run -o yaml | kubectl apply -f -
+kubectl create ns $LEADER_ELECTION_NAMESPACE --dry-run -o yaml | kubectl apply -f -
+```
+
+1. From the istio repo root directory, run `go run ./operator/cmd/operator/*.go server`
 
 To use Remote debugging with IntelliJ, replace above step 2 with following:
 
-1. From ./cmd/manager path run
+1. From `./operator/cmd/operator` path run
 `
 dlv debug --headless --listen=:2345 --api-version=2 -- server
 `.
@@ -154,6 +162,7 @@ The `istioctl` command supports the following flags:
 - `logtostderr`: log to console (by default logs go to ./mesh-cli.log).
 - `dry-run`: console output only, nothing applied to cluster or written to files.
 - `verbose`: display entire manifest contents and other debug info (default is false).
+- `set`: select profile or override profile defaults
 
 #### Basic default manifest
 
@@ -233,13 +242,13 @@ The simplest customization is to select a profile different to `default` e.g. `s
 
 ```yaml
 # sds-install.yaml
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   profile: sds
 ```
 
-Use the Istio operator `mesh` binary to generate the manifests for the new configuration profile:
+Use `istioctl` to generate the manifests for the new configuration profile:
 
 ```bash
 istioctl manifest generate -f samples/sds.yaml
@@ -247,12 +256,34 @@ istioctl manifest generate -f samples/sds.yaml
 
 After running the command, the Helm charts are rendered using `data/profiles/sds.yaml`.
 
+##### --set syntax
+
+The CLI `--set` option can be used to override settings within the profile.
+
+For example, to enable auto mTLS, use `istioctl manifest generate --set values.global.mtls.auto=true --set values.global.controlPlaneSecurityEnabled=true`
+
+To override a setting that includes dots, escape them with a backslash (\).  Your shell may require enclosing quotes.
+
+``` bash
+istioctl manifest generate --set "values.sidecarInjectorWebhook.injectedAnnotations.container\.apparmor\.security\.beta\.kubernetes\.io/istio-proxy=runtime/default"
+```
+
+To override a setting that is part of a list, use brackets.
+
+``` bash
+istioctl manifest generate --set values.gateways.istio-ingressgateway.enabled=false \
+--set values.gateways.istio-egressgateway.enabled=true \
+--set 'values.gateways.istio-egressgateway.secretVolumes[0].name'=egressgateway-certs \
+--set 'values.gateways.istio-egressgateway.secretVolumes[0].secretName'=istio-egressgateway-certs \
+--set 'values.gateways.istio-egressgateway.secretVolumes[0].mountPath'=/etc/istio/egressgateway-certs
+```
+
 #### Install from file path
 
 The compiled in charts and profiles are used by default, but you can specify a file path, for example:
 
 ```yaml
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   profile: /usr/home/bob/go/src/github.com/ostromart/istio-installer/data/profiles/default.yaml
@@ -297,7 +328,7 @@ defines install time parameters like feature and component enablement and namesp
 The simplest customization is to turn features and components on and off. For example, to turn off all policy ([samples/sds-policy-off.yaml](samples/sds-policy-off.yaml)):
 
 ```yaml
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   profile: sds
@@ -313,7 +344,7 @@ Each Istio component has K8s settings, and these can be overridden from the defa
 Istio defined schemas ([samples/pilot-k8s.yaml](samples/pilot-k8s.yaml)):
 
 ```yaml
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   components:
@@ -368,7 +399,7 @@ are overridden the same way as the new API, though a customized CR overlaid over
 profile. Here's an example of overriding some global level default values ([samples/values-global.yaml](samples/values-global.yaml)):
 
 ```yaml
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   profile: sds
@@ -382,7 +413,7 @@ Values overrides can also be specified for a particular component
  ([samples/values-pilot.yaml](samples/values-pilot.yaml)):
 
 ```yaml
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   values:
@@ -400,7 +431,7 @@ possible to overlay the generated K8s resources before they are applied with use
 override some container level values in the Pilot container  ([samples/pilot-advanced-override.yaml](samples/pilot-advanced-override.yaml)):
 
 ```yaml
-apiVersion: operator.istio.io/v1alpha1
+apiVersion: install.istio.io/v1alpha1
 kind: IstioOperator
 spec:
   components:

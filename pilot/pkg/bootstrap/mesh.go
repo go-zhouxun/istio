@@ -15,6 +15,7 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -82,9 +83,7 @@ func (s *Server) initMeshConfiguration(args *PilotArgs, fileWatcher filewatcher.
 // initMeshNetworks loads the mesh networks configuration from the file provided
 // in the args and add a watcher for changes in this file.
 func (s *Server) initMeshNetworks(args *PilotArgs, fileWatcher filewatcher.FileWatcher) {
-	if args.NetworksConfigFile == "" {
-		log.Info("mesh networks configuration not provided")
-	} else {
+	if args.NetworksConfigFile != "" {
 		var err error
 		s.environment.NetworksWatcher, err = mesh.NewNetworksWatcher(fileWatcher, args.NetworksConfigFile)
 		if err != nil {
@@ -106,7 +105,7 @@ func getMeshConfig(kube kubernetes.Interface, namespace, name string) (*meshconf
 		return &defaultMesh, nil
 	}
 
-	cfg, err := kube.CoreV1().ConfigMaps(namespace).Get(name, metav1.GetOptions{})
+	cfg, err := kube.CoreV1().ConfigMaps(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			defaultMesh := mesh.DefaultMeshConfig()
@@ -124,7 +123,7 @@ func getMeshConfig(kube kubernetes.Interface, namespace, name string) (*meshconf
 
 	meshConfig, err := mesh.ApplyMeshConfigDefaults(cfgYaml)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed reading mesh config: %v. YAML:\n%s", err, cfgYaml)
 	}
 
 	log.Warn("Loading default mesh config from K8S, no reload support.")

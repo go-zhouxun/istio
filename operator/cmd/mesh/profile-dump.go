@@ -15,26 +15,47 @@
 package mesh
 
 import (
+	"encoding/json"
 	"fmt"
 
+	"github.com/ghodss/yaml"
 	"github.com/spf13/cobra"
+
+	"istio.io/istio/operator/pkg/tpath"
+	"istio.io/istio/operator/pkg/util"
+	"istio.io/istio/operator/pkg/util/clog"
 )
 
 type profileDumpArgs struct {
-	// inFilename is an array of paths to the input IstioOperator CR files.
-	inFilename []string
-	// If set, display the translated Helm values rather than IstioOperatorSpec.
-	helmValues bool
+	// inFilenames is an array of paths to the input IstioOperator CR files.
+	inFilenames []string
 	// configPath sets the root node for the subtree to display the config for.
 	configPath string
+	// outputFormat controls the format of profile dumps
+	outputFormat string
+	// charts is a path to a charts and profiles directory in the local filesystem, or URL with a release tgz.
+	charts string
 }
 
+const (
+	jsonOutput = "json"
+	yamlOutput = "yaml"
+)
+
+const (
+	IstioOperatorTreeString = `
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+`
+)
+
 func addProfileDumpFlags(cmd *cobra.Command, args *profileDumpArgs) {
-	cmd.PersistentFlags().StringSliceVarP(&args.inFilename, "filename", "f", nil, filenameFlagHelpStr)
+	cmd.PersistentFlags().StringSliceVarP(&args.inFilenames, "filename", "f", nil, filenameFlagHelpStr)
 	cmd.PersistentFlags().StringVarP(&args.configPath, "config-path", "p", "",
-		"The path the root of the configuration subtree to dump e.g. trafficManagement.components.pilot. By default, dump whole tree")
-	cmd.PersistentFlags().BoolVarP(&args.helmValues, "helm-values", "", false,
-		"If set, dumps the Helm values that IstioControlPlaceSpec is translated to before manifests are rendered")
+		"The path the root of the configuration subtree to dump e.g. components.pilot. By default, dump whole tree")
+	cmd.PersistentFlags().StringVarP(&args.outputFormat, "output", "o", yamlOutput,
+		"Output format: one of json|yaml")
+	cmd.PersistentFlags().StringVarP(&args.charts, "charts", "d", "", ChartsFlagHelpStr)
 }
 
 func profileDumpCmd(rootArgs *rootArgs, pdArgs *profileDumpArgs) *cobra.Command {
@@ -49,31 +70,87 @@ func profileDumpCmd(rootArgs *rootArgs, pdArgs *profileDumpArgs) *cobra.Command 
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			l := NewLogger(rootArgs.logToStdErr, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			l := clog.NewConsoleLogger(cmd.OutOrStdout(), cmd.ErrOrStderr(), installerScope)
 			return profileDump(args, rootArgs, pdArgs, l)
 		}}
 
 }
 
-func profileDump(args []string, rootArgs *rootArgs, pdArgs *profileDumpArgs, l *Logger) error {
+func prependHeader(yml string) (string, error) {
+	out, err := tpath.AddSpecRoot(yml)
+	if err != nil {
+		return "", err
+	}
+	out2, err := util.OverlayYAML(IstioOperatorTreeString, out)
+	if err != nil {
+		return "", err
+	}
+	return out2, nil
+}
+
+// Convert the generated YAML to pretty JSON.
+func yamlToPrettyJSON(yml string) (string, error) {
+	// YAML objects are not completely compatible with JSON
+	// objects. Let yaml.YAMLToJSON handle the edge cases and
+	// we'll re-encode the result to pretty JSON.
+	uglyJSON, err := yaml.YAMLToJSON([]byte(yml))
+	if err != nil {
+		return "", err
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(uglyJSON, &decoded); err != nil {
+		return "", err
+	}
+	prettyJSON, err := json.MarshalIndent(decoded, "", "    ")
+	if err != nil {
+		return "", err
+	}
+	return string(prettyJSON), nil
+}
+
+func profileDump(args []string, rootArgs *rootArgs, pdArgs *profileDumpArgs, l clog.Logger) error {
 	initLogsOrExit(rootArgs)
 
-	if len(args) == 1 && pdArgs.inFilename != nil {
+	if len(args) == 1 && pdArgs.inFilenames != nil {
 		return fmt.Errorf("cannot specify both profile name and filename flag")
 	}
 
-	profile := ""
-	if len(args) == 1 {
-		profile = args[0]
+	switch pdArgs.outputFormat {
+	case jsonOutput, yamlOutput:
+	default:
+		return fmt.Errorf("unknown output format: %v", pdArgs.outputFormat)
 	}
-	// For profile dump, we may not have access to the kube cluster, so don't rely on kubeconfig
-	// TODO: support optional kubeconfig reading
-	y, err := genProfile(pdArgs.helmValues, pdArgs.inFilename, profile, "", pdArgs.configPath, true, nil, l)
+
+	setFlags := applyFlagAliases(make([]string, 0), pdArgs.charts, "")
+	if len(args) == 1 {
+		setFlags = append(setFlags, "profile="+args[0])
+	}
+
+	y, _, err := GenerateConfig(pdArgs.inFilenames, setFlags, true, nil, l)
 	if err != nil {
 		return err
 	}
 
-	l.print(y + "\n")
+	if pdArgs.configPath == "" {
+		if y, err = prependHeader(y); err != nil {
+			return err
+		}
+	} else {
+		if y, err = tpath.GetConfigSubtree(y, pdArgs.configPath); err != nil {
+			return err
+		}
+	}
+
+	switch pdArgs.outputFormat {
+	case jsonOutput:
+		j, err := yamlToPrettyJSON(y)
+		if err != nil {
+			return err
+		}
+		l.Print(j + "\n")
+	case yamlOutput:
+		l.Print(y + "\n")
+	}
 
 	return nil
 }

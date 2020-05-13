@@ -22,9 +22,15 @@ import (
 	"strconv"
 	"strings"
 
-	"istio.io/istio/operator/pkg/util"
+	"github.com/ghodss/yaml"
+
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"istio.io/pkg/log"
+
+	"istio.io/istio/operator/pkg/apis/istio/v1alpha1"
+	"istio.io/istio/operator/pkg/util"
 )
 
 var (
@@ -87,15 +93,11 @@ var (
 
 // validateWithRegex checks whether the given value matches the regexp r.
 func validateWithRegex(path util.Path, val interface{}, r *regexp.Regexp) (errs util.Errors) {
-	switch {
-	case !util.IsString(val):
-		errs = util.AppendErr(errs, fmt.Errorf("path %s has bad type %T, want string", path, val))
-
-	case len(r.FindString(val.(string))) != len(val.(string)):
+	valStr := fmt.Sprint(val)
+	if len(r.FindString(valStr)) != len(valStr) {
 		errs = util.AppendErr(errs, fmt.Errorf("invalid value %s: %s", path, val))
+		printError(errs.ToError())
 	}
-
-	printError(errs.ToError())
 	return errs
 }
 
@@ -207,7 +209,7 @@ func printError(err error) {
 func logWithError(err error, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	if err == nil {
-		msg += fmt.Sprint(": OK\n")
+		msg += ": OK\n"
 	} else {
 		msg += fmt.Sprintf(": %v\n", err)
 	}
@@ -269,3 +271,90 @@ func anchored(res ...*regexp.Regexp) *regexp.Regexp {
 
 // ValidatorFunc validates a value.
 type ValidatorFunc func(path util.Path, i interface{}) util.Errors
+
+// UnmarshalIOP unmarshals a string containing IstioOperator as YAML.
+func UnmarshalIOP(iopYAML string) (*v1alpha1.IstioOperator, error) {
+	// Remove creationDate (util.UnmarshalWithJSONPB fails if present)
+	mapIOP := make(map[string]interface{})
+	if err := yaml.Unmarshal([]byte(iopYAML), &mapIOP); err != nil {
+		return nil, err
+	}
+	un := &unstructured.Unstructured{Object: mapIOP}
+	un.SetCreationTimestamp(meta_v1.Time{}) // UnmarshalIstioOperator chokes on these
+	byIOP, err := yaml.Marshal(un)
+	if err != nil {
+		return nil, err
+	}
+	iopYAML = string(byIOP)
+
+	iop := &v1alpha1.IstioOperator{}
+	if err := util.UnmarshalWithJSONPB(iopYAML, iop, false); err != nil {
+		return nil, fmt.Errorf("%s:\n\nYAML:\n%s", err, iopYAML)
+	}
+	return iop, nil
+}
+
+// ValidIOPYAML validates the iopYAML strings, which should contain IstioOperator YAML.
+func ValidIOPYAML(iopYAML string) error {
+	if strings.TrimSpace(iopYAML) == "" {
+		return nil
+	}
+	iop, err := UnmarshalIOP(iopYAML)
+	if err != nil {
+		return err
+	}
+	return ValidIOP(iop)
+}
+
+// ValidIOP validates the given IstioOperator object.
+func ValidIOP(iop *v1alpha1.IstioOperator) error {
+	errs := CheckIstioOperatorSpec(iop.Spec, false)
+	return errs.ToError()
+}
+
+// compose path for slice s with index i
+func indexPathForSlice(s string, i int) string {
+	return fmt.Sprintf("%s[%d]", s, i)
+}
+
+// get validation function for specified path
+func getValidationFuncForPath(validations map[string]ValidatorFunc, path util.Path) (ValidatorFunc, bool) {
+	pstr := path.String()
+	// fast match
+	if !strings.Contains(pstr, "[") && !strings.Contains(pstr, "]") {
+		vf, ok := validations[pstr]
+		return vf, ok
+	}
+	for p, vf := range validations {
+		ps := strings.Split(p, ".")
+		if len(ps) != len(path) {
+			continue
+		}
+		for i, v := range ps {
+			if !matchPathNode(v, path[i]) {
+				break
+			}
+			if i == len(ps)-1 {
+				return vf, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// check whether the pn path node match pattern.
+// pattern may container '*', eg. [1] match [*].
+func matchPathNode(pattern, pn string) bool {
+	if !strings.Contains(pattern, "[") && !strings.Contains(pattern, "]") {
+		return pattern == pn
+	}
+	if !strings.Contains(pn, "[") && !strings.Contains(pn, "]") {
+		return false
+	}
+	indexPattern := pattern[strings.IndexByte(pattern, '[')+1 : strings.IndexByte(pattern, ']')]
+	if indexPattern == "*" {
+		return true
+	}
+	index := pn[strings.IndexByte(pn, '[')+1 : strings.IndexByte(pn, ']')]
+	return indexPattern == index
+}

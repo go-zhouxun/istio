@@ -16,9 +16,9 @@ package galley
 
 import (
 	"istio.io/istio/pkg/test"
-	"istio.io/istio/pkg/test/framework/components/environment"
 	"istio.io/istio/pkg/test/framework/components/namespace"
 	"istio.io/istio/pkg/test/framework/resource"
+	"istio.io/istio/pkg/test/framework/resource/environment"
 )
 
 // Instance of Galley
@@ -43,8 +43,14 @@ type Instance interface {
 	// ApplyConfigDir recursively applies all the config files in the specified directory
 	ApplyConfigDir(ns namespace.Instance, configDir string) error
 
+	// DeleteConfigDir recursively deletes all the config files in the specified directory
+	DeleteConfigDir(ns namespace.Instance, configDir string) error
+
 	// ClearConfig clears all applied config so far.
 	ClearConfig() error
+
+	// GetConfigDir returns the current configuration directory.
+	GetConfigDir() string
 
 	// SetMeshConfig applies the given mesh config.
 	SetMeshConfig(meshCfg string) error
@@ -73,6 +79,9 @@ type Config struct {
 	// This field is ignored on native
 	// TODO(https://github.com/istio/istio/issues/20299) remove this field
 	CreateClient bool
+
+	// Cluster to be used in a multicluster environment
+	Cluster resource.Cluster
 }
 
 // New returns a new instance of echo.
